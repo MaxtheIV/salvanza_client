@@ -227,6 +227,40 @@ func (c *Client) UpdateJob(job map[string]interface{}) error {
 	return nil
 }
 
+// GetActivity returns the service's current backup activity snapshot.
+func (c *Client) GetActivity() (*ActivitySnapshot, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/activity")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get activity: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("service returned error: %d", resp.StatusCode)
+	}
+	var snap ActivitySnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return &snap, nil
+}
+
+// GetActivityLog returns run-log entries with Seq >= since.
+func (c *Client) GetActivityLog(since uint64) (*ActivityLogResponse, error) {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/activity/log?since=%d", c.baseURL, since))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get activity log: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("service returned error: %d", resp.StatusCode)
+	}
+	var out ActivityLogResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	return &out, nil
+}
+
 // DeleteJob deletes a scheduled job by ID
 func (c *Client) DeleteJob(jobID string) error {
 	req, err := http.NewRequest(http.MethodDelete, c.baseURL+"/jobs/delete/"+jobID, nil)

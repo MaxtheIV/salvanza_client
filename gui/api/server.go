@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,14 @@ type BackupHandler interface {
 	PinServerFingerprint(id, fingerprint string) error
 }
 
+// ActivityProvider is the optional interface through which the API serves the
+// live backup state (GUI Activity tab). It is optional so older handlers still
+// satisfy BackupHandler; the routes answer 503 when it is missing.
+type ActivityProvider interface {
+	GetActivity() ActivitySnapshot
+	GetActivityLog(since uint64) ActivityLogResponse
+}
+
 // NewServer creates a new API server. token is the shared local-auth secret that
 // every request must present in the X-Nimbus-Token header (H-01).
 func NewServer(addr string, handler BackupHandler, token, version string) *Server {
@@ -67,6 +76,8 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("/jobs/update", s.handleJobUpdate)
 	s.mux.HandleFunc("/jobs/delete/", s.handleJobDelete)
 	s.mux.HandleFunc("/pbs/fingerprint", s.handlePinFingerprint)
+	s.mux.HandleFunc("/activity", s.handleActivity)
+	s.mux.HandleFunc("/activity/log", s.handleActivityLog)
 }
 
 // Start starts the HTTP server
@@ -426,6 +437,44 @@ func (s *Server) handlePinFingerprint(w http.ResponseWriter, r *http.Request) {
 		"message": "Fingerprint pinned successfully",
 	}
 	s.writeJSON(w, resp, http.StatusOK)
+}
+
+func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, ok := s.app.(ActivityProvider)
+	if !ok {
+		s.writeError(w, "activity not available", http.StatusServiceUnavailable)
+		return
+	}
+	s.writeJSON(w, provider.GetActivity(), http.StatusOK)
+}
+
+// handleActivityLog pages the in-memory run log: ?since=<seq> returns entries
+// with Seq >= since (default 0 = everything retained). The ring is bounded
+// (2000 lines), so the response is too.
+func (s *Server) handleActivityLog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provider, ok := s.app.(ActivityProvider)
+	if !ok {
+		s.writeError(w, "activity not available", http.StatusServiceUnavailable)
+		return
+	}
+	var since uint64
+	if raw := r.URL.Query().Get("since"); raw != "" {
+		n, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			s.writeError(w, "since must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		since = n
+	}
+	s.writeJSON(w, provider.GetActivityLog(since), http.StatusOK)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, data interface{}, status int) {
