@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/tizbac/proxmoxbackupclient_go/gui/api"
+)
 
 // Backup result + live-progress types shared across the backup engine, the GUI,
 // the local API and the scheduler. BackupStatus is the single source of truth for
@@ -169,15 +173,6 @@ func excludedToIssues(excluded []string) []FileIssue {
 	return issues
 }
 
-// BackupProgressStats is a structured snapshot of in-flight backup progress so the
-// GUI can render real statistics instead of parsing them out of a log string.
-type BackupProgressStats struct {
-	Percent      float64 `json:"percent"` // 0.0 - 1.0
-	BytesDone    uint64  `json:"bytes_done"`
-	BytesTotal   uint64  `json:"bytes_total"` // 0 when the background size scan has not finished
-	NewChunks    uint64  `json:"new_chunks"`
-	ReusedChunks uint64  `json:"reused_chunks"`
-	FailedChunks uint64  `json:"failed_chunks"`
-	CurrentDir   string  `json:"current_dir,omitempty"`
-	Message      string  `json:"message"`
-}
+// BackupProgressStats lives in gui/api so the service API can serve it verbatim;
+// gui imports api, never the reverse.
+type BackupProgressStats = api.BackupProgressStats
