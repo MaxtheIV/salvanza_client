@@ -308,3 +308,40 @@ Go (`GOWORK=off`, per module):
 `gui/frontend/src/components/ActivityPanel.jsx` (new — first extraction out of the
 2700-line `App.jsx`), `gui/frontend/src/i18n/translations.js`, `gui/frontend/src/index.css`,
 `CHANGELOG.md`.
+
+## 7. Implementation notes (deviations from the design above)
+
+Recorded after the final fix wave; the code is the authority where the two disagree.
+
+- **The per-destination backup lock moved into `RunBackupInline`.** §2.0 assumed the
+  existing lock inside `runBackupInlineInternal` was enough to serialise runs against the
+  process-wide tracker. It is not: the wrapper calls `BeginRun` before the inner function
+  ever blocks, so a queued run would reset the in-flight run's snapshot, percent and log.
+  The lock is now taken by `acquireBackupLock` in the wrapper, before `BeginRun`, and held
+  for the whole run (all folders); `BackupOptions.lockHeld` tells the inner function to
+  skip it.
+- **Two log rings, one sequence counter.** §1.4 specified a single 2000-line ring. Per-file
+  `debug` lines would evict every milestone from it within seconds on a large folder, and
+  the pane's default `info+` filter would then show nothing. The tracker keeps a
+  2000-entry milestone ring (`info`/`warn`/`error`) and a 300-entry per-file ring
+  (`debug`), both drawing from one shared counter; `LogSince` merges them by seq, so the
+  wire format and the `since` cursor are unchanged.
+- **The tracker only logs while a run is in flight.** The sinks are process-level and
+  permanent but the flush loop only exists between `BeginRun` and `EndRun`, and
+  `writeBackupLog` is shared with restore/search/cache code. Lines appended outside a run
+  are dropped rather than buffered; the pending batch is capped at the ring capacity.
+- **`activity:lost` is its own Wails event.** §4 asked for an `error` line in the log pane
+  when the service goes away mid-run. `activityPoller` emits `activity:lost` (empty
+  payload — the text is a translation key) after 10 consecutive `/activity` failures while
+  the last snapshot said running; the frontend reducer closes the run and appends the line
+  locally. Reset on the next successful poll.
+- **Per-file lines stay GUI-only**, as §1.4 intended: they never reach the per-run log file.
+- **"A backup is running" is read from the tracker snapshot, not from the percent.** The
+  percent is legitimately 0 during the indeterminate window and for the whole run in
+  service mode (`SetProgressCallbacks` is `!service`-only, deliberately left that way), so
+  the frontend derives `backupRunning` from `activity.run.running` for the Start/Stop
+  buttons and the Backup tab's mini bar. The percent itself is monotonic per run and only
+  resets when `activity:run` announces a new `run_id`.
+- **`SetDirTotal` carries the directory index.** The background size scan outlives the
+  directory it was started for, so the tracker drops a result that does not match the
+  directory currently being archived.

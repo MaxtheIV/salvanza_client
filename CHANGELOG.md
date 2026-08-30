@@ -22,8 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Service-mode progress polling runs every second (was 3 s).
 
 ### Fixed
-- Service mode showed "Starting backup..." with no progress until completion: the
-  progress-callback hook was only compiled into the GUI binary.
+- Service mode showed no live progress in the GUI: the Activity tab now reads the
+  service's `/activity` state. (The Backup tab's own percent still comes from
+  `/backup/status` and stays coarse in service mode.)
+- A second backup to the same destination (scheduler firing during a manual run, or a
+  double click) reset the running backup's Activity view: the per-destination lock is
+  now taken before the run is announced and held for every folder of the run.
 
 ## [0.3.0] - 2026-07-02
 
