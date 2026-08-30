@@ -118,20 +118,19 @@ calls `currentRunLog.Append(level, msg)` **unless** the message starts with `New
 / `[WARN]` → warn, `[DEBUG]` → debug, else info. `RunBackupInline` calls `Reset()` where it
 calls `StartBackupRunLog`.
 
-Per-file lines come from the engine's `OnEntry` wrapper:
-`writeBackupLog(fmt.Sprintf("[File] %s (%s)", path, humanBytes(size)))` for files;
-directories log `[Dir] path`. These are level `debug` so the pane's filter can hide them.
+Per-file lines come from the engine's `OnEntry` wrapper and go **only** to the tracker
+(`activity.Log("debug", "[File] path (size)")`, `[Dir] path` for directories) — not to the
+per-run log file, which would otherwise grow by one line per file. Level `debug` so the
+pane's filter can hide them.
 
 ### 1.5 Delivery to the GUI (standalone)
 
-`BackupOptions` gains `OnLog func([]RunLogEntry)`. The engine flushes accumulated entries
-every 250 ms (ticker goroutine started/stopped inside `RunBackupInline`) and on completion,
-so a busy backup produces at most 4 Wails events per second for the log. `main.go` emits
-`backup:log` with `{entries: [...]}`.
-
-`backup:stats` is emitted as today, with the new fields added. Stats emission is throttled
-to at most 4/s as well (currently tied to the 10 MB progress tick — keep that, it is already
-coarse enough).
+`BackupOptions` is unchanged. The tracker flushes accumulated log entries to its `onLog`
+sink every 250 ms (ticker goroutine started in `BeginRun`, stopped in `EndRun`) and on
+completion, so a busy backup produces at most 4 Wails events per second for the log.
+`main.go` registers sinks at startup that emit `activity:run` (snapshot), `backup:stats`
+(stats, with the new fields) and `backup:log` (`{entries: [...]}`). Stats emission stays
+tied to the 10 MB progress tick plus phase changes.
 
 ### 1.6 Service build
 
@@ -139,60 +138,79 @@ coarse enough).
 Any new `App` method the frontend calls (`GetActiveBackupLog` for late-joining, see 3.4)
 gets a stub.
 
-## 2. Local service API (`gui/api/`)
+## 2. Process-wide activity tracker and local service API
 
-### 2.1 Types
+### 2.0 Why a tracker instead of per-job callbacks (deviation from the chat design)
 
-```go
-type BackupProgress struct {
-    // existing fields unchanged …
-    Stats *BackupProgressStats `json:"stats,omitempty"`
-}
-type BackupLogResponse struct {
-    Entries []RunLogEntry `json:"entries"`
-    Next    uint64        `json:"next"`
-}
-```
+`SetProgressCallbacks` is defined in `main.go`, which carries the `!service` build tag,
+so the service binary does not implement it and the API's optional-interface probe
+fails: service-mode progress today is "Starting backup..." until completion. Backups
+started by the scheduler never appear in the API's per-job map at all. Per-job callbacks
+therefore cannot deliver parity or late-join.
 
-`BackupProgressStats` and `RunLogEntry` move to `gui/api/types.go` (package `api`) and the
-`gui` package aliases them (`type BackupProgressStats = api.BackupProgressStats`) — `gui`
-already imports `gui/api`; the reverse import is impossible.
+Instead, `gui/backup_activity.go` owns a single process-wide `activityTracker`
+(`var activity`), fed directly by `RunBackupInline`/`backupReal`/`ChunkState` — whoever
+started the run. It holds the current `api.ActivitySnapshot`, the `RunLog`, the
+throughput meter and the run-level byte accounting (finished directories + current
+directory) that produces the percent and ETA. Only one run is tracked at a time (the
+per-destination mutex serialises runs to the same PBS; two runs to different servers
+overlap and the last writer wins — documented, not solved).
 
-### 2.2 Endpoint
+Sinks are process-level, registered once at GUI startup (standalone) — not per run:
+`activity.SetSinks(onRun, onStats, onLog)`. The service process registers none; the API
+server pulls snapshots.
 
-`GET /backup/log/{jobID}?since=<seq>` → `200 BackupLogResponse`; `404` unknown job;
-`400` non-numeric `since`. Same auth/Origin rules as every other route (token header,
-`Origin` → 403). Response size bounded by the ring (2000 entries).
-
-### 2.3 Server-side state
-
-`api.Server` keeps, per job: `*BackupProgress` (existing) and `*RunLog` (new). The
-`SetProgressCallbacks` optional interface grows two callbacks:
+### 2.1 Types (`gui/api/types.go`, aliased in `gui`)
 
 ```go
-SetProgressCallbacks(jobID string,
-    onProgress func(string, float64, string),
-    onStats    func(string, *BackupProgressStats),
-    onLog      func(string, []RunLogEntry),
-    onComplete func(string, bool, string))
+type BackupProgressStats struct { /* see 1.2 */ }
+type RunLogEntry struct { Seq uint64; TS string; Level string; Msg string }
+type ActivitySnapshot struct {
+    Running   bool                `json:"running"`
+    RunID     string              `json:"run_id"`
+    BackupID  string              `json:"backup_id"`
+    Target    string              `json:"target"`     // "https://pbs:8007/datastore"
+    StartTime string              `json:"start_time,omitempty"`
+    EndTime   string              `json:"end_time,omitempty"`
+    Complete  bool                `json:"complete"`
+    Success   bool                `json:"success"`
+    Outcome   string              `json:"outcome,omitempty"`
+    Message   string              `json:"message"`
+    Stats     BackupProgressStats `json:"stats"`
+    LogNext   uint64              `json:"log_next"`
+}
+type ActivityLogResponse struct { Entries []RunLogEntry `json:"entries"`; Next uint64 `json:"next"` }
 ```
 
-`App.progressCallbacks` stores all four; the engine's `OnStats`/`OnLog` hooks in `main.go`
-fan out to registered callbacks exactly like `OnProgress` does today (callbacks present →
-service path, else Wails events). Job state is dropped from the server map on the same
-schedule as today's progress entries.
+### 2.2 Endpoints
 
-### 2.4 Client + GUI polling
+- `GET /activity` → `200 ActivitySnapshot` (zero-value snapshot with `running:false`
+  when nothing has run since the service started).
+- `GET /activity/log?since=<seq>` → `200 ActivityLogResponse`; `400` non-numeric `since`.
 
-`api.Client.GetBackupLog(jobID string, since uint64) (*BackupLogResponse, error)`.
+Same auth/Origin rules as every other route. The server probes the handler for the
+optional interface `ActivityProvider { GetActivity() ActivitySnapshot;
+GetActivityLog(since uint64) ActivityLogResponse }` and answers `503` if absent.
 
-`App.pollBackupProgress`: interval 3 s → **1 s**. Each tick:
-1. `GetBackupStatus` → emit `backup:progress` (unchanged) and, when `Stats != nil`,
-   `backup:stats`.
-2. `GetBackupLog(since)` → emit `backup:log` when non-empty; advance `since = Next`.
-3. On `Complete`: one final log fetch, then `backup:complete`.
+### 2.3 App methods (untagged `gui/app_activity.go`, Wails-bound and API-visible)
 
-Failure handling stays as is (20 consecutive errors → give up).
+`GetActivity()` / `GetActivityLog(since)`: in the GUI process running in service mode they
+proxy to the service over `api.Client.GetActivity()` / `GetActivityLog(since)`; otherwise
+they read the local tracker. The frontend calls them once on mount (late join / tab
+reopen); the service process's API server calls them for `/activity*`.
+
+### 2.4 GUI polling in service mode
+
+`App.activityPoller()` is a goroutine started once (`sync.Once`) when the GUI is, or
+becomes, `ModeService`. Loop: `GET /activity`; when `running` (or the run id / complete
+flag changed since the last tick) emit `activity:run` and `backup:stats`; then
+`GET /activity/log?since` and emit `backup:log` when non-empty; `since` resets to 0 when
+the run id changes. Tick 1 s while running, 3 s otherwise. Errors are logged and the loop
+continues (no give-up — the GUI's `pollBackupProgress` keeps its own 20-strike rule for
+`backup:complete`).
+
+`pollBackupProgress` is unchanged: it still drives `backup:progress` / `backup:complete`
+for GUI-started jobs (the split-backup flow awaits `backup:complete`).
 
 ## 3. Frontend (`gui/frontend/src/`)
 
@@ -285,7 +303,7 @@ Go (`GOWORK=off`, per module):
 
 `pbscommon/pxar.go`, `gui/backup_status.go`, `gui/backup_inline.go`, `gui/backup_eta.go`
 (new), `gui/backup_runlog.go` (new), `gui/logging_gui.go`, `gui/logging_service.go`,
-`gui/main.go`, `gui/app_types.go`, `gui/app_service_stubs.go`, `gui/api/types.go`,
+`gui/main.go`, `gui/app_activity.go` (new), `gui/backup_activity.go` (new), `gui/api/types.go`,
 `gui/api/server.go`, `gui/api/client.go`, `gui/frontend/src/App.jsx`,
 `gui/frontend/src/components/ActivityPanel.jsx` (new — first extraction out of the
 2700-line `App.jsx`), `gui/frontend/src/i18n/translations.js`, `gui/frontend/src/index.css`,
