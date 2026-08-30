@@ -122,18 +122,14 @@ func uploadWorker(client *pbscommon.PBSClient, filename string, total_size uint6
 
 	workerfn := func() {
 		for seg := range ch2 {
-			h := sha256.New()
-			if _, err := h.Write(seg.Data); err != nil {
-				errch <- fmt.Errorf("failed to hash chunk at position %d: %w", seg.Pos, err)
-				break
-			}
-
-			shahash := hex.EncodeToString(h.Sum(nil))
+			// Zero blocks are recognised without hashing (see digest.go).
+			segmentDigest := fixedChunkDigest(seg.Data)
+			shahash := hex.EncodeToString(segmentDigest)
 			//binary.Write(CS.chunkdigests, binary.LittleEndian, (CS.pos + uint64(nread)))
 
 			assignment_mutex.Lock()
-			CS.index_hash_data[seg.Pos] = h.Sum(nil)
-			digests[int64(seg.Pos)] = h.Sum(nil)
+			CS.index_hash_data[seg.Pos] = segmentDigest
+			digests[int64(seg.Pos)] = segmentDigest
 
 			_, exists := knownChunks.GetOrInsert(shahash, true)
 			assignment_mutex.Unlock()

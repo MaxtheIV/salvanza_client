@@ -145,6 +145,14 @@ type PBSClient struct {
 	// alone is a no-op while streams are open.
 	activeConn   net.Conn
 	activeConnMu sync.Mutex
+
+	// zstdDec is the one decoder shared by every GetChunkData call on this
+	// client. A restore decodes one chunk per call, and zstd.NewReader per chunk
+	// allocates its buffers and spawns its worker goroutines every time; reusing
+	// a single decoder removes that churn (and the deadlock upstream hit with a
+	// per-call reader — tizbac 5142604). DecodeAll is safe for concurrent use.
+	zstdDec     *zstd.Decoder
+	zstdDecOnce sync.Once
 }
 
 // activeClients tracks every PBSClient currently holding an open HTTP/2
@@ -1107,31 +1115,50 @@ func (pbs *PBSClient) GetChunkData(digest string) ([]byte, error) {
 		return nil, err
 	}
 
+	data, err := pbs.decodeChunkBlob(ret)
+	if err != nil {
+		return nil, fmt.Errorf("chunk %s: %w", digest, err)
+	}
+	return data, nil
+}
+
+// chunkDecoder returns the client's shared zstd decoder, creating it on first
+// use so a client that only ever uploads never pays for one. Concurrency 0 =
+// GOMAXPROCS: DownloadToBytes decodes chunks from a worker pool, and the
+// decoder's concurrency setting caps how many DecodeAll calls run at once.
+func (pbs *PBSClient) chunkDecoder() *zstd.Decoder {
+	pbs.zstdDecOnce.Do(func() {
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+		if err != nil {
+			// Only reachable with invalid options, which are constants here.
+			panic(fmt.Sprintf("zstd decoder: %v", err))
+		}
+		pbs.zstdDec = dec
+	})
+	return pbs.zstdDec
+}
+
+// decodeChunkBlob strips the PBS blob framing (8-byte magic, 4-byte CRC32)
+// and inflates a compressed payload. Split from GetChunkData so the framing
+// and decoder reuse can be tested without a server.
+func (pbs *PBSClient) decodeChunkBlob(ret []byte) ([]byte, error) {
 	// Guard against a truncated/error body (proxy 502, reset mid-restore): the
 	// blob magic + CRC header is 12 bytes, so ret[:8]/ret[12:] would panic.
 	if len(ret) < 12 {
-		return nil, fmt.Errorf("short chunk response for %s: %d bytes", digest, len(ret))
+		return nil, fmt.Errorf("short chunk response: %d bytes", len(ret))
 	}
 
-	if slices.Equal(ret[:8], blobUncompressedMagic) {
+	switch {
+	case slices.Equal(ret[:8], blobUncompressedMagic):
 		return ret[12:], nil
-	} else if slices.Equal(ret[:8], blobCompressedMagic) {
-		rd1 := bytes.NewReader(ret[12:])
-		dec, err := zstd.NewReader(rd1)
-
+	case slices.Equal(ret[:8], blobCompressedMagic):
+		out, err := pbs.chunkDecoder().DecodeAll(ret[12:], nil)
 		if err != nil {
 			return nil, err
 		}
-		defer dec.Close()
-		ret2 := make([]byte, 0)
-		ret2, err = dec.DecodeAll(ret[12:], ret2)
-		if err != nil {
-			return nil, err
-		}
-		return ret2, nil
-	} else {
-		return nil, fmt.Errorf("encrypted chunks not supported")
+		return out, nil
+	default:
+		return nil, fmt.Errorf("invalid chunk magic, or encrypted chunk (not supported)")
 	}
-
 }
 

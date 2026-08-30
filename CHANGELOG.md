@@ -20,6 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   10 %→90 % mapping; while a folder's size is still being measured the bar is
   indeterminate instead of showing a made-up number.
 - Service-mode progress polling runs every second (was 3 s).
+- Restore: chunks are inflated with one zstd decoder per PBS session instead of a new
+  decoder per chunk (fewer allocations and goroutines on the restore hot path; ported
+  from upstream `tizbac/proxmoxbackupclient_go` 5142604).
+- `machinebackup`: all-zero 4 MB blocks are recognised by comparison instead of being
+  SHA-256 hashed, which is ~30x cheaper on the unallocated parts of a raw disk (ported
+  from upstream 519b624).
 
 ### Fixed
 - Service mode showed no live progress in the GUI: the Activity tab now reads the
