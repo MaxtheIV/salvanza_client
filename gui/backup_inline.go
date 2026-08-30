@@ -53,6 +53,11 @@ type BackupOptions struct {
 	// directory — the offset keeps "directory i of N" honest across the whole run.
 	// Internal wiring only; never set by callers outside this file.
 	dirIndexBase int
+	// lockHeld tells runBackupInlineInternal that RunBackupInline already holds the
+	// per-destination backup lock for this whole run, so the inner function must not
+	// try to take it again (sync.Mutex is not reentrant). Internal wiring only,
+	// same pattern as dirIndexBase.
+	lockHeld bool
 }
 
 // isFatalSessionError returns true for errors that make the current PBS session
@@ -75,6 +80,32 @@ var (
 	backupLocks      = make(map[string]*sync.Mutex)
 	backupLocksMutex sync.Mutex
 )
+
+// acquireBackupLock takes the per-destination backup mutex and returns the
+// release function.
+//
+// It is called from RunBackupInline (the wrapper) rather than from
+// runBackupInlineInternal so the lock spans the ENTIRE run, all folders included.
+// The activity tracker is process-wide and tracks exactly one run: a second run
+// to the same destination that only blocked inside the inner function would
+// already have called BeginRun, wiping the in-flight run's snapshot, percent and
+// log — and its EndRun would then declare the still-running backup finished (C-1).
+func acquireBackupLock(baseURL, datastore string, onProgress func(float64, string)) func() {
+	lock := getBackupLock(baseURL, datastore)
+	writeBackupLog(fmt.Sprintf("[Backup Lock] Waiting for lock on %s/%s (prevents concurrent backups)", baseURL, datastore))
+
+	// Notify that we're waiting if OnProgress is set
+	if onProgress != nil {
+		onProgress(0, "Waiting for previous backup to complete...")
+	}
+
+	lock.Lock()
+	writeBackupLog(fmt.Sprintf("[Backup Lock] ✓ Lock acquired for %s/%s - starting backup", baseURL, datastore))
+	return func() {
+		lock.Unlock()
+		writeBackupLog(fmt.Sprintf("[Backup Lock] ✓ Lock released for %s/%s", baseURL, datastore))
+	}
+}
 
 // getBackupLock returns a mutex for the given backup destination
 func getBackupLock(baseURL, datastore string) *sync.Mutex {
@@ -169,14 +200,13 @@ type ChunkState struct {
 	failedchunk        *atomic.Uint64 // Track failed chunk uploads
 	knownChunks        *hashmap.Map[string, bool]
 	onProgress         func(float64, string)
-	currentDir         string // Directory currently being archived, for the log message
 	lastProgressReport uint64
 	totalSize          *atomic.Uint64 // Total size, updated by background scan
 	uploadErrors       []string       // Collect upload errors to report at the end
 	errorsMutex        sync.Mutex     // Protect uploadErrors slice
 }
 
-func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, failedchunk *atomic.Uint64, knownChunks *hashmap.Map[string, bool], onProgress func(float64, string), totalSize *atomic.Uint64, currentDir string) {
+func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, failedchunk *atomic.Uint64, knownChunks *hashmap.Map[string, bool], onProgress func(float64, string), totalSize *atomic.Uint64) {
 	c.assignments = make([]string, 0)
 	c.assignmentsOffset = make([]uint64, 0)
 	c.pos = 0
@@ -193,7 +223,6 @@ func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, fa
 	c.failedchunk = failedchunk
 	c.knownChunks = knownChunks
 	c.onProgress = onProgress
-	c.currentDir = currentDir
 	c.lastProgressReport = 0
 	c.totalSize = totalSize
 	c.uploadErrors = make([]string, 0)
@@ -429,10 +458,19 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	runLogger := StartBackupRunLog(runLogID)
 	defer EndBackupRunLog(runLogger)
 
+	// Serialize against other runs to the same destination BEFORE touching the
+	// activity tracker, and hold the lock for every folder of this run (C-1). The
+	// inner calls below are told the lock is already held.
+	releaseLock := acquireBackupLock(opts.BaseURL, opts.Datastore, opts.OnProgress)
+	defer releaseLock()
+	opts.lockHeld = true
+
 	// Announce the run to the activity tracker (GUI Activity tab / API /activity).
 	// BackupID may still be empty here — runBackupInlineInternal derives it and
-	// corrects the snapshot via SetBackupID.
-	activity.BeginRun(opts.BackupID, fmt.Sprintf("%s/%s", opts.BaseURL, opts.Datastore), len(opts.BackupDirs))
+	// corrects the snapshot via SetBackupID. The target is sanitized: the snapshot
+	// is handed to the GUI and to /activity, and a base URL can carry credentials
+	// in its userinfo part (I-3).
+	activity.BeginRun(opts.BackupID, fmt.Sprintf("%s/%s", security.SanitizeURL(opts.BaseURL), opts.Datastore), len(opts.BackupDirs))
 	runEnded := false
 	endRun := func(success bool, outcome, message string) {
 		if runEnded {
@@ -536,7 +574,9 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 		}
 		err := runBackupInlineInternal(single)
 		if singleStatus != nil {
-			endRun(singleStatus.Outcome != OutcomeFailed, string(singleStatus.Outcome), singleStatus.Message)
+			// Success() (not "!= failed"): a partial run must show red in the Activity
+			// panel, matching the honest-result contract used everywhere else (M-1).
+			endRun(singleStatus.Success(), string(singleStatus.Outcome), singleStatus.Message)
 		}
 		return err
 	}
@@ -601,7 +641,7 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	if opts.OnResult != nil {
 		opts.OnResult(agg)
 	}
-	endRun(agg.Outcome != OutcomeFailed, string(agg.Outcome), agg.Message)
+	endRun(agg.Success(), string(agg.Outcome), agg.Message)
 	if len(perDirErrors) > 0 {
 		return fmt.Errorf("%s", agg.Message)
 	}
@@ -625,21 +665,14 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 
 	startTime := time.Now()
 
-	// Acquire backup lock for this destination to prevent concurrent backups
-	backupLock := getBackupLock(opts.BaseURL, opts.Datastore)
-	writeBackupLog(fmt.Sprintf("[Backup Lock] Waiting for lock on %s/%s (prevents concurrent backups)", opts.BaseURL, opts.Datastore))
-
-	// Notify that we're waiting if OnProgress is set
-	if opts.OnProgress != nil {
-		opts.OnProgress(0, "Waiting for previous backup to complete...")
+	// Acquire backup lock for this destination to prevent concurrent backups —
+	// unless RunBackupInline already holds it for the whole run (the normal path);
+	// re-taking a non-reentrant mutex here would deadlock. Direct callers of the
+	// internal function (there are none outside this file today) still get locked.
+	if !opts.lockHeld {
+		release := acquireBackupLock(opts.BaseURL, opts.Datastore, opts.OnProgress)
+		defer release()
 	}
-
-	backupLock.Lock()
-	writeBackupLog(fmt.Sprintf("[Backup Lock] ✓ Lock acquired for %s/%s - starting backup", opts.BaseURL, opts.Datastore))
-	defer func() {
-		backupLock.Unlock()
-		writeBackupLog(fmt.Sprintf("[Backup Lock] ✓ Lock released for %s/%s", opts.BaseURL, opts.Datastore))
-	}()
 
 	// Generate backup ID from path if not specified
 	writeBackupLog("[DEBUG] Generating backup ID if needed")
@@ -658,7 +691,13 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 	}
 	writeBackupLog(fmt.Sprintf("[DEBUG] BackupID set to: %s", opts.BackupID))
 	activity.Log("info", "Backup ID: "+opts.BackupID)
-	activity.SetBackupID(opts.BackupID)
+	// Only the first folder of a multi-folder run may correct the announced backup
+	// id: every later folder runs under its own derived "<base>_<path>" id, and
+	// letting each of them overwrite the snapshot would make the Activity header
+	// drift away from the id the run was announced with (M-4).
+	if opts.dirIndexBase == 0 {
+		activity.SetBackupID(opts.BackupID)
+	}
 
 	// Default to "host" type for directory backups
 	if opts.BackupType == "" {
@@ -763,7 +802,7 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 		var err error
 		var dirBytes uint64
 		for attempt := 1; attempt <= maxDirAttempts; attempt++ {
-			dirBytes, err = backupDirectory(client, &newchunk, &reusechunk, &failedchunk, dir, opts.UseVSS, progress, opts.ExcludeList)
+			dirBytes, err = backupDirectory(client, &newchunk, &reusechunk, &failedchunk, dir, opts.UseVSS, progress, opts.ExcludeList, opts.dirIndexBase+idx+1)
 			if err == nil {
 				break
 			}
@@ -970,7 +1009,11 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 	return nil
 }
 
-func backupDirectory(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, usevss bool, progress func(float64, string), excludeList []string) (uint64, error) {
+// backupDirectory archives one directory. dirIndex is the 1-based index of that
+// directory within the whole run (RunBackupInline's dirIndexBase offset already
+// applied); it is only used to stamp the background size scan's result so a late
+// result cannot be attributed to the wrong directory (M-7).
+func backupDirectory(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, usevss bool, progress func(float64, string), excludeList []string, dirIndex int) (uint64, error) {
 	writeBackupLog(fmt.Sprintf("Starting backup of %s", backupdir))
 	originalPath := backupdir
 
@@ -983,16 +1026,16 @@ func backupDirectory(client *pbscommon.PBSClient, newchunk, reusechunk, failedch
 				break
 			}
 			var e error
-			bytesArchived, e = backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList)
+			bytesArchived, e = backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList, dirIndex)
 			return e
 		})
 		return bytesArchived, err
 	}
 
-	return backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList)
+	return backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList, dirIndex)
 }
 
-func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, originalPath string, vssUsed bool, progress func(float64, string), excludeList []string) (returnBytes uint64, returnErr error) {
+func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, originalPath string, vssUsed bool, progress func(float64, string), excludeList []string, dirIndex int) (returnBytes uint64, returnErr error) {
 	// Panic recovery - critical to prevent silent crashes during backup
 	defer func() {
 		if r := recover(); r != nil {
@@ -1023,7 +1066,7 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 			writeBackupLog(fmt.Sprintf("WARNING: Size calculation had errors: %v", err))
 		}
 		totalSize.Store(size)
-		activity.SetDirTotal(size)
+		activity.SetDirTotal(dirIndex, size)
 		writeBackupLog(fmt.Sprintf("Total size calculated: %d MB", size/(1024*1024)))
 	}()
 
@@ -1075,10 +1118,10 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 	writeBackupLog(fmt.Sprintf("Known chunks: %d", knownChunks.Len()))
 
 	pxarChunk := ChunkState{}
-	pxarChunk.Init(newchunk, reusechunk, failedchunk, knownChunks, progress, totalSize, backupdir)
+	pxarChunk.Init(newchunk, reusechunk, failedchunk, knownChunks, progress, totalSize)
 
 	pcat1Chunk := ChunkState{}
-	pcat1Chunk.Init(newchunk, reusechunk, failedchunk, knownChunks, nil, totalSize, "")
+	pcat1Chunk.Init(newchunk, reusechunk, failedchunk, knownChunks, nil, totalSize)
 
 	pxarChunk.wrid, err = client.CreateDynamicIndex(archive.ArchiveName)
 	if err != nil {

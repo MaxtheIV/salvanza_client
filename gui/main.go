@@ -772,14 +772,32 @@ func (a *App) activityPoller() {
 	var lastRunID string
 	var lastRunning, lastComplete bool
 	var since uint64
+	// Spec §4: a run we are mirroring must not stay "running" forever if the
+	// service dies mid-backup. After maxActivityPollErrors consecutive failures
+	// while the last snapshot said running we announce the loss ONCE (the panel
+	// closes the run and logs an error line) and keep polling — the service can
+	// come back, and the next successful poll re-arms this.
+	const maxActivityPollErrors = 10
+	pollErrors := 0
+	lostAnnounced := false
 	for {
 		interval := 3 * time.Second
 		snap, err := a.apiClient.GetActivity()
 		if err != nil {
 			writeDebugLog(fmt.Sprintf("[Activity] poll failed: %v", err))
+			pollErrors++
+			if lastRunning && !lostAnnounced && pollErrors >= maxActivityPollErrors {
+				lostAnnounced = true
+				if a.ctx != nil {
+					// Empty payload on purpose: the message is a UI string and belongs
+					// in translations.js, not in Go.
+					runtime.EventsEmit(a.ctx, "activity:lost", map[string]interface{}{})
+				}
+			}
 			time.Sleep(interval)
 			continue
 		}
+		pollErrors, lostAnnounced = 0, false
 		if snap.RunID != lastRunID {
 			since = 0
 		}

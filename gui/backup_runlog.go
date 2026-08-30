@@ -8,10 +8,44 @@ import (
 	"github.com/tizbac/proxmoxbackupclient_go/gui/api"
 )
 
-// runLogCapacity bounds the in-memory run log. 2000 lines is a few minutes of
-// per-file output on a fast disk and well under the 1 MiB API body cap; the
-// per-run log FILE keeps everything, this buffer only feeds the GUI.
+// runLogCapacity bounds the in-memory MILESTONE run log (info/warn/error).
+// 2000 lines is a long backup's worth of milestones and well under the 1 MiB API
+// body cap; the per-run log FILE keeps everything, this buffer only feeds the GUI.
 const runLogCapacity = 2000
+
+// fileLogCapacity bounds the separate per-file (debug) ring. Per-file lines are
+// emitted once per archived entry, so on a big folder they would evict every
+// milestone from a single shared ring within seconds — and the log pane's default
+// "info+" filter would then show an empty pane. Keeping them in their own small
+// ring means the milestones survive and the debug view still has recent context.
+const fileLogCapacity = 300
+
+// runLogSeq is the sequence counter shared by the two rings of one run. Seqs must
+// be globally monotonic across both rings: the GUI merges them into one ordered
+// pane and pages with a single "since" cursor, so per-ring counters would
+// interleave wrongly and break the cursor.
+type runLogSeq struct {
+	mu   sync.Mutex
+	next uint64
+}
+
+func newRunLogSeq() *runLogSeq { return &runLogSeq{next: 1} }
+
+// take reserves and returns the next sequence number.
+func (s *runLogSeq) take() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := s.next
+	s.next++
+	return n
+}
+
+// peek returns the seq the next Append will use, without consuming it.
+func (s *runLogSeq) peek() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.next
+}
 
 // RunLog is a fixed-capacity ring of log lines with monotonically increasing
 // sequence numbers, so a poller can ask "everything since seq N" and detect that
@@ -21,26 +55,32 @@ type RunLog struct {
 	buf  []api.RunLogEntry
 	head int // index of the oldest entry
 	size int
-	next uint64 // seq assigned to the next Append; starts at 1
+	seq  *runLogSeq // may be shared with a sibling ring (see fileLogCapacity)
 }
 
+// NewRunLog returns a ring with a private sequence counter.
 func NewRunLog(capacity int) *RunLog {
+	return newRunLogShared(capacity, newRunLogSeq())
+}
+
+// newRunLogShared returns a ring that draws its sequence numbers from seq, so
+// several rings of the same run stay on one ordered, gap-free numbering.
+func newRunLogShared(capacity int, seq *runLogSeq) *RunLog {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &RunLog{buf: make([]api.RunLogEntry, capacity), next: 1}
+	return &RunLog{buf: make([]api.RunLogEntry, capacity), seq: seq}
 }
 
 func (l *RunLog) Append(level, msg string) api.RunLogEntry {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e := api.RunLogEntry{
-		Seq:   l.next,
+		Seq:   l.seq.take(),
 		TS:    time.Now().Format(time.RFC3339Nano),
 		Level: level,
 		Msg:   msg,
 	}
-	l.next++
 	if l.size < len(l.buf) {
 		l.buf[(l.head+l.size)%len(l.buf)] = e
 		l.size++
@@ -63,13 +103,11 @@ func (l *RunLog) Since(seq uint64) ([]api.RunLogEntry, uint64) {
 			out = append(out, e)
 		}
 	}
-	return out, l.next
+	return out, l.seq.peek()
 }
 
 func (l *RunLog) Next() uint64 {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.next
+	return l.seq.peek()
 }
 
 // Reset drops the retained lines but keeps counting seq, so a client holding a

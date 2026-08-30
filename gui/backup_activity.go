@@ -20,7 +20,14 @@ import (
 type activityTracker struct {
 	mu   sync.Mutex
 	snap api.ActivitySnapshot
-	log  *RunLog
+
+	// Two rings, one shared seq counter. Milestones (info/warn/error) and the
+	// high-volume per-file debug lines each get their own capacity so a folder
+	// with 100k files cannot evict every milestone before the user reads it; the
+	// shared counter keeps LogSince a single ordered, gap-free stream.
+	logSeq  *runLogSeq
+	log     *RunLog
+	fileLog *RunLog
 
 	meter     *throughputMeter
 	startedAt time.Time
@@ -47,8 +54,11 @@ type activityTracker struct {
 var activity = newActivityTracker()
 
 func newActivityTracker() *activityTracker {
+	seq := newRunLogSeq()
 	return &activityTracker{
-		log:              NewRunLog(runLogCapacity),
+		logSeq:           seq,
+		log:              newRunLogShared(runLogCapacity, seq),
+		fileLog:          newRunLogShared(fileLogCapacity, seq),
 		meter:            newThroughputMeter(30 * time.Second),
 		logFlushInterval: 250 * time.Millisecond,
 	}
@@ -70,6 +80,7 @@ func (t *activityTracker) BeginRun(backupID, target string, dirCount int) string
 	now := time.Now()
 	t.startedAt = now
 	t.log.Reset()
+	t.fileLog.Reset()
 	t.meter.Reset()
 	t.completedBytes, t.completedTotal, t.curDone, t.curTotal, t.lastPercent = 0, 0, 0, 0, 0
 	t.pendingLog = nil
@@ -80,7 +91,7 @@ func (t *activityTracker) BeginRun(backupID, target string, dirCount int) string
 		Target:    target,
 		StartTime: now.Format(time.RFC3339),
 		Stats:     api.BackupProgressStats{Phase: "connect", DirCount: dirCount, EtaSeconds: -1},
-		LogNext:   t.log.Next(),
+		LogNext:   t.logSeq.peek(),
 	}
 	stop := make(chan struct{})
 	t.flushStop = stop
@@ -149,9 +160,17 @@ func (t *activityTracker) BeginDir(index int, dir string) {
 	t.mu.Unlock()
 }
 
-func (t *activityTracker) SetDirTotal(total uint64) {
+// SetDirTotal records the scanned size of directory dirIndex. The scan runs in a
+// background goroutine that outlives the directory it was started for (it is only
+// bounded by analysisSizeBudget), so a late result from a previous directory would
+// otherwise overwrite the current one's total and make the percent jump. dirIndex
+// is the generation guard: a call for anything but the directory currently being
+// archived is dropped (M-7).
+func (t *activityTracker) SetDirTotal(dirIndex int, total uint64) {
 	t.mu.Lock()
-	t.curTotal = total
+	if dirIndex == t.snap.Stats.DirIndex {
+		t.curTotal = total
+	}
 	t.mu.Unlock()
 }
 
@@ -231,10 +250,28 @@ func (t *activityTracker) Log(level, msg string) {
 	t.mu.Unlock()
 }
 
+// appendLogLocked routes one line to the right ring and queues it for the next
+// sink flush. Lines are dropped entirely when no run is in flight: the sinks are
+// process-level and permanent, but flushLoop only exists between BeginRun and
+// EndRun, so anything appended outside a run would sit in pendingLog forever
+// (writeBackupLog is also used by restore, search and cache code) and would
+// pollute the next run's log the moment it is flushed (I-1).
 func (t *activityTracker) appendLogLocked(level, msg string) {
-	e := t.log.Append(level, msg)
+	if !t.snap.Running {
+		return
+	}
+	ring := t.log
+	if level == "debug" {
+		ring = t.fileLog
+	}
+	e := ring.Append(level, msg)
 	t.snap.LogNext = e.Seq + 1
 	if t.onLog != nil {
+		// Bounded like the rings themselves: a sink that stops draining (or a burst
+		// between two 250 ms flushes) must not grow this slice without limit.
+		if len(t.pendingLog) >= runLogCapacity {
+			t.pendingLog = append(t.pendingLog[:0], t.pendingLog[1:]...)
+		}
 		t.pendingLog = append(t.pendingLog, e)
 	}
 }
@@ -273,8 +310,36 @@ func (t *activityTracker) Snapshot() api.ActivitySnapshot {
 	return t.snap
 }
 
+// LogSince merges the milestone and per-file rings into one seq-ordered stream.
+// Both rings draw from the same counter, so a plain merge-sort of the two already
+// reproduces the order the lines were emitted in.
 func (t *activityTracker) LogSince(seq uint64) ([]api.RunLogEntry, uint64) {
-	return t.log.Since(seq)
+	// Read the cursor BEFORE the two rings, not after: the engine keeps appending
+	// while we read, and an entry that lands between the two Since calls must be
+	// re-delivered on the next poll (the GUI dedupes by seq) rather than skipped.
+	next := t.logSeq.peek()
+	milestones, _ := t.log.Since(seq)
+	files, _ := t.fileLog.Since(seq)
+	if len(files) == 0 {
+		return milestones, next
+	}
+	if len(milestones) == 0 {
+		return files, next
+	}
+	out := make([]api.RunLogEntry, 0, len(milestones)+len(files))
+	i, j := 0, 0
+	for i < len(milestones) && j < len(files) {
+		if milestones[i].Seq <= files[j].Seq {
+			out = append(out, milestones[i])
+			i++
+		} else {
+			out = append(out, files[j])
+			j++
+		}
+	}
+	out = append(out, milestones[i:]...)
+	out = append(out, files[j:]...)
+	return out, next
 }
 
 // formatBytesHuman renders a byte count for log lines ("12.4 KB").

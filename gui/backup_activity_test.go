@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,8 @@ func TestActivityTrackerRunLifecycle(t *testing.T) {
 	if id2 == id {
 		t.Errorf("run ids must differ")
 	}
+	// Every BeginRun starts a flushLoop goroutine; end the run so it stops (M-6).
+	tr.EndRun(true, "verified_success", "done")
 }
 
 func TestActivityTrackerPercentAcrossDirectories(t *testing.T) {
@@ -59,6 +62,7 @@ func TestActivityTrackerPercentAcrossDirectories(t *testing.T) {
 	var last api.BackupProgressStats
 	tr.SetSinks(nil, func(s api.BackupProgressStats) { last = s }, nil)
 	tr.BeginRun("h", "t", 2)
+	defer tr.EndRun(true, "verified_success", "done")
 
 	tr.BeginDir(1, `C:\a`)
 	st := tr.Progress(50, 1, 2, 0, "m")
@@ -69,7 +73,7 @@ func TestActivityTrackerPercentAcrossDirectories(t *testing.T) {
 		t.Errorf("onStats sink got %+v", last)
 	}
 
-	tr.SetDirTotal(100)
+	tr.SetDirTotal(1, 100)
 	st = tr.Progress(50, 1, 2, 0, "m")
 	if st.Indeterminate || st.Percent != 0.5 || st.BytesTotal != 100 {
 		t.Errorf("dir1 half: %+v", st)
@@ -87,7 +91,7 @@ func TestActivityTrackerPercentAcrossDirectories(t *testing.T) {
 	if st.Percent != 0.99 || !st.Indeterminate || st.DirIndex != 2 {
 		t.Errorf("dir2 start: %+v", st)
 	}
-	tr.SetDirTotal(300)
+	tr.SetDirTotal(2, 300)
 	st = tr.Progress(150, 1, 2, 0, "m")
 	// run-level: done 150+150 = 300 of total 100+300 = 400 → 0.75, but clamped to
 	// the monotonic floor of 0.99 reached earlier.
@@ -99,15 +103,16 @@ func TestActivityTrackerPercentAcrossDirectories(t *testing.T) {
 func TestActivityTrackerMonotonicWithoutOvershoot(t *testing.T) {
 	tr := newTestTracker()
 	tr.BeginRun("h", "t", 2)
+	defer tr.EndRun(true, "verified_success", "done")
 	tr.BeginDir(1, "a")
-	tr.SetDirTotal(100)
+	tr.SetDirTotal(1, 100)
 	st := tr.Progress(40, 0, 0, 0, "")
 	if st.Percent != 0.4 {
 		t.Fatalf("percent = %v", st.Percent)
 	}
 	tr.EndDir(40, 100)
 	tr.BeginDir(2, "b")
-	tr.SetDirTotal(100)
+	tr.SetDirTotal(2, 100)
 	st = tr.Progress(10, 0, 0, 0, "")
 	if st.Percent != 0.4 { // 50/200 = 0.25 < floor 0.4
 		t.Errorf("percent regressed: %v", st.Percent)
@@ -169,11 +174,125 @@ func TestActivityTrackerBeginRunResetsLog(t *testing.T) {
 	tr.Log("info", "old")
 	tr.EndRun(false, "failed", "x")
 	tr.BeginRun("h", "t", 1)
+	defer tr.EndRun(true, "verified_success", "done")
 	entries, _ := tr.LogSince(0)
 	if len(entries) != 0 {
 		t.Errorf("log not reset on BeginRun: %+v", entries)
 	}
 	if s := tr.Snapshot(); s.Complete || s.Stats.FilesDone != 0 || s.Stats.Percent != 0 {
 		t.Errorf("stats not reset on BeginRun: %+v", s)
+	}
+}
+
+// I-1: the sinks are process-level and permanent, but the flush loop only exists
+// during a run. Anything logged outside a run must be dropped on the floor, not
+// buffered until it pollutes the next run.
+func TestActivityTrackerLogOnlyWhileRunning(t *testing.T) {
+	tr := newTestTracker()
+	tr.SetSinks(nil, nil, func([]api.RunLogEntry) {})
+
+	tr.Log("info", "restore line before any run")
+	tr.EntryDone(`C:\tmp\x.txt`, 1, false)
+	if entries, next := tr.LogSince(0); len(entries) != 0 || next != 1 {
+		t.Fatalf("logging before BeginRun leaked: %+v next %d", entries, next)
+	}
+	tr.mu.Lock()
+	pending := len(tr.pendingLog)
+	tr.mu.Unlock()
+	if pending != 0 {
+		t.Errorf("pendingLog grew outside a run: %d", pending)
+	}
+
+	tr.BeginRun("h", "t", 1)
+	tr.Log("info", "during")
+	tr.EndRun(true, "verified_success", "ok")
+	during, nextAfterRun := tr.LogSince(0)
+	if len(during) != 1 || during[0].Msg != "during" {
+		t.Fatalf("in-run line missing: %+v", during)
+	}
+
+	tr.Log("warn", "cache line after the run")
+	tr.EntryDone(`C:\tmp\x.txt`, 1, false)
+	after, next := tr.LogSince(0)
+	if len(after) != 1 || after[0].Msg != "during" || next != nextAfterRun {
+		t.Errorf("logging after EndRun leaked: %+v next %d", after, next)
+	}
+}
+
+// I-1: pendingLog is drained by flushLoop every 250 ms, but a burst between two
+// ticks (or a sink that stalls) must not grow it without bound.
+func TestActivityTrackerPendingLogIsCapped(t *testing.T) {
+	tr := newTestTracker()
+	tr.logFlushInterval = time.Hour // never flush during this test
+	tr.SetSinks(nil, nil, func([]api.RunLogEntry) {})
+	tr.BeginRun("h", "t", 1)
+	for i := 0; i < runLogCapacity+64; i++ {
+		tr.Log("info", "x")
+	}
+	tr.mu.Lock()
+	pending := len(tr.pendingLog)
+	tr.mu.Unlock()
+	if pending > runLogCapacity {
+		t.Errorf("pendingLog = %d entries, want <= %d", pending, runLogCapacity)
+	}
+	tr.EndRun(true, "verified_success", "ok")
+}
+
+// I-2: per-file debug lines live in their own small ring, so a folder with far
+// more files than the ring holds cannot evict the milestones the default "info+"
+// filter shows.
+func TestActivityTrackerFileLinesDoNotEvictMilestones(t *testing.T) {
+	tr := newTestTracker()
+	tr.BeginRun("h", "t", 1)
+	defer tr.EndRun(true, "verified_success", "ok")
+	tr.BeginDir(1, "a")
+	tr.Log("info", "first milestone")
+	for i := 0; i < fileLogCapacity+128; i++ {
+		tr.EntryDone(fmt.Sprintf(`C:\a\f%d.txt`, i), 1024, false)
+	}
+	tr.Log("info", "last milestone")
+
+	entries, _ := tr.LogSince(0)
+	var milestones []string
+	debugCount := 0
+	for _, e := range entries {
+		if e.Level == "debug" {
+			debugCount++
+			continue
+		}
+		milestones = append(milestones, e.Msg)
+	}
+	if len(milestones) != 2 || milestones[0] != "first milestone" || milestones[1] != "last milestone" {
+		t.Errorf("milestones evicted by per-file lines: %+v", milestones)
+	}
+	if debugCount != fileLogCapacity {
+		t.Errorf("per-file ring kept %d lines, want %d", debugCount, fileLogCapacity)
+	}
+	// The merge must stay strictly ordered by the shared sequence counter.
+	for i := 1; i < len(entries); i++ {
+		if entries[i].Seq <= entries[i-1].Seq {
+			t.Fatalf("merged log out of order at %d: %d after %d", i, entries[i].Seq, entries[i-1].Seq)
+		}
+	}
+}
+
+// M-7: the background size scan outlives the directory it was started for, so a
+// late result for a previous directory must not overwrite the current total.
+func TestActivityTrackerSetDirTotalIgnoresStaleDirectory(t *testing.T) {
+	tr := newTestTracker()
+	tr.BeginRun("h", "t", 2)
+	defer tr.EndRun(true, "verified_success", "ok")
+	tr.BeginDir(1, "a")
+	tr.SetDirTotal(1, 100)
+	tr.EndDir(100, 100)
+
+	tr.BeginDir(2, "b")
+	tr.SetDirTotal(1, 999999) // late result from directory 1
+	if st := tr.Progress(10, 0, 0, 0, ""); !st.Indeterminate || st.BytesTotal != 100 {
+		t.Errorf("stale SetDirTotal applied: %+v", st)
+	}
+	tr.SetDirTotal(2, 200)
+	if st := tr.Progress(10, 0, 0, 0, ""); st.Indeterminate || st.BytesTotal != 300 {
+		t.Errorf("current SetDirTotal ignored: %+v", st)
 	}
 }
