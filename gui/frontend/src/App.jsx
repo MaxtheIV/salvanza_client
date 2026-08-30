@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useReducer, useRef } from 'react'
 import {
   ArrowClockwiseIcon,
   ArrowCounterClockwiseIcon,
@@ -18,6 +18,7 @@ import {
   PencilSimpleIcon,
   PlayIcon,
   PlusIcon,
+  PulseIcon,
   ShieldCheckIcon,
   StarIcon,
   StopIcon,
@@ -25,6 +26,7 @@ import {
   XIcon,
 } from '@phosphor-icons/react'
 import { useTranslation } from './i18n/i18nContext'
+import ActivityPanel from './components/ActivityPanel'
 import LanguageSwitcher from './components/LanguageSwitcher'
 import ThemeToggle from './components/ThemeToggle'
 // Bundled rather than fetched from nimbus.rdem-systems.com: this is a desktop
@@ -38,6 +40,8 @@ let SaveScheduledJob, UpdateScheduledJob, GetScheduledJobs, DeleteScheduledJob, 
 // Multi-PBS functions
 let ListPBSServers, GetPBSServer, AddPBSServer, UpdatePBSServer, DeletePBSServer, SetDefaultPBSServer, GetDefaultPBSID, TestPBSConnection
 let GetServerFingerprint, PinPBSServerFingerprint
+// Activity tab: current run snapshot + its ring-buffered log
+let GetActivity, GetActivityLog
 
 // Check if we're running in Wails
 if (window.go) {
@@ -72,11 +76,63 @@ if (window.go) {
   TestPBSConnection = window.go.main.App.TestPBSConnection
   GetServerFingerprint = window.go.main.App.GetServerFingerprint
   PinPBSServerFingerprint = window.go.main.App.PinPBSServerFingerprint
+  GetActivity = window.go.main.App.GetActivity
+  GetActivityLog = window.go.main.App.GetActivityLog
 }
 
 // Wails events
 if (window.runtime) {
   EventsOn = window.runtime.EventsOn
+}
+
+// Activity tab state. One reducer so a new run atomically resets log + stats,
+// whether the run was started here (standalone events) or observed via the
+// service poller (late join).
+const initialActivity = { run: null, stats: null, log: [], nextSeq: 0, dropped: false }
+
+// Keep the visible log bounded: a long backup can emit far more lines than a
+// scrollback pane is worth, and every entry is retained in React state.
+const MAX_LOG_ENTRIES = 2000
+
+function activityReducer(state, action) {
+  switch (action.type) {
+    case 'run': {
+      const run = action.run
+      if (!run || !run.run_id) return state
+      if (!state.run || state.run.run_id !== run.run_id) {
+        return { run, stats: run.stats || null, log: [], nextSeq: 0, dropped: false }
+      }
+      return { ...state, run, stats: run.stats || state.stats }
+    }
+    case 'stats':
+      return state.run ? { ...state, stats: action.stats } : state
+    case 'log': {
+      const entries = action.entries || []
+      if (!entries.length) return state
+      // Merge by seq rather than trusting arrival order: at a run boundary the
+      // standalone sinks and the service poller can both be feeding us, so
+      // batches arrive concurrently and out of order. Dropping everything below
+      // nextSeq would silently lose a late batch that overlaps a newer one.
+      const prevLast = state.log.length ? state.log[state.log.length - 1].seq : -1
+      const merged = state.log.concat(entries).sort((a, b) => a.seq - b.seq)
+      const deduped = []
+      for (const e of merged) {
+        // The sort puts equal seqs next to each other, so one look-back dedupes.
+        if (deduped.length && deduped[deduped.length - 1].seq === e.seq) continue
+        deduped.push(e)
+      }
+      const log = deduped.slice(-MAX_LOG_ENTRIES)
+      // "dropped" drives the "older entries dropped" banner. It is sticky: a gap
+      // relative to what we already hold means the backend ring buffer wrapped
+      // past us, and trimming to MAX_LOG_ENTRIES drops old lines ourselves.
+      const dropped = state.dropped ||
+        (state.log.length > 0 && entries[0].seq > prevLast + 1) ||
+        deduped.length > MAX_LOG_ENTRIES
+      return { ...state, log, nextSeq: log[log.length - 1].seq + 1, dropped }
+    }
+    default:
+      return state
+  }
 }
 
 function App() {
@@ -132,20 +188,7 @@ function App() {
   const [scheduledJobs, setScheduledJobs] = useState([])
   const [jobHistory, setJobHistory] = useState([])
   const [editingJobId, setEditingJobId] = useState(null) // Track which job is being edited
-  const [backupStats, setBackupStats] = useState({
-    startTime: null,
-    lastUpdate: null,
-    lastPercent: 0,
-    speed: 0,
-    eta: null,
-    // Structured live stats (from the backup:stats event)
-    bytesDone: 0,
-    bytesTotal: 0,
-    newChunks: 0,
-    reusedChunks: 0,
-    failedChunks: 0,
-    currentDir: ''
-  })
+  const [activity, dispatchActivity] = useReducer(activityReducer, initialActivity)
   const [status, setStatus] = useState({ message: '', type: '', visible: false })
 
   const [snapshots, setSnapshots] = useState([])
@@ -231,59 +274,19 @@ function App() {
     if (!EventsOn) return
 
     const unsubProgress = EventsOn('backup:progress', (data) => {
-      const now = Date.now()
-      const percent = Math.round(data.percent)
-      setProgress(percent)
+      setProgress(Math.round(data.percent))
       showStatus(data.message, 'info', false)
-
-      // Calculate speed and ETA
-      setBackupStats(prev => {
-        const startTime = prev.startTime || now
-        const lastUpdate = prev.lastUpdate || now
-        const timeDiff = (now - lastUpdate) / 1000 // seconds
-        const percentDiff = percent - prev.lastPercent
-
-        // Calculate speed (percent per second)
-        let speed = prev.speed
-        if (timeDiff > 0 && percentDiff > 0) {
-          speed = percentDiff / timeDiff
-        }
-
-        // Calculate ETA (seconds remaining)
-        let eta = null
-        if (speed > 0 && percent < 100) {
-          const remainingPercent = 100 - percent
-          eta = Math.round(remainingPercent / speed)
-        }
-
-        return {
-          ...prev, // preserve structured stats (bytes/chunks) set by backup:stats
-          startTime,
-          lastUpdate: now,
-          lastPercent: percent,
-          speed,
-          eta
-        }
-      })
     })
 
-    // Structured live statistics (bytes + chunk counts) emitted alongside progress.
-    const unsubStats = EventsOn('backup:stats', (data) => {
-      setBackupStats(prev => ({
-        ...prev,
-        bytesDone: data.bytesDone || 0,
-        bytesTotal: data.bytesTotal || 0,
-        newChunks: data.newChunks || 0,
-        reusedChunks: data.reusedChunks || 0,
-        failedChunks: data.failedChunks || 0,
-        currentDir: data.currentDir || ''
-      }))
-    })
+    // The Activity tab is driven entirely by the tracker: the run snapshot, the
+    // structured stats emitted alongside progress, and the run log.
+    const unsubRun = EventsOn('activity:run', (snap) => dispatchActivity({ type: 'run', run: snap }))
+    const unsubStats = EventsOn('backup:stats', (stats) => dispatchActivity({ type: 'stats', stats }))
+    const unsubLog = EventsOn('backup:log', (data) => dispatchActivity({ type: 'log', entries: data.entries }))
 
     const unsubComplete = EventsOn('backup:complete', (data) => {
       setProgress(data.success ? 100 : 0)
-      setBackupStats({ startTime: null, lastUpdate: null, lastPercent: 0, speed: 0, eta: null, bytesDone: 0, bytesTotal: 0, newChunks: 0, reusedChunks: 0, failedChunks: 0, currentDir: '' })
-      showStatus(data.success ? data.message : data.message, data.success ? 'success' : 'error')
+      showStatus(data.message, data.success ? 'success' : 'error')
 
       // Add to job history
       const historyEntry = {
@@ -299,9 +302,27 @@ function App() {
       setJobHistory(prev => [historyEntry, ...prev].slice(0, 20)) // Keep last 20 entries
     })
 
+    // Late join / reopen: prime from the backend so a run started by the
+    // scheduler (service mode) or before this component mounted is visible.
+    ;(async () => {
+      try {
+        if (!GetActivity) return
+        const snap = await GetActivity()
+        if (snap && snap.run_id) {
+          dispatchActivity({ type: 'run', run: snap })
+          if (GetActivityLog) {
+            const lg = await GetActivityLog(0)
+            dispatchActivity({ type: 'log', entries: lg && lg.entries })
+          }
+        }
+      } catch (_) { /* no backend (vite dev) */ }
+    })()
+
     return () => {
       if (unsubProgress) unsubProgress()
+      if (unsubRun) unsubRun()
       if (unsubStats) unsubStats()
+      if (unsubLog) unsubLog()
       if (unsubComplete) unsubComplete()
     }
   }, [])
@@ -761,6 +782,9 @@ function App() {
 
     try {
       showStatus(t('splitAnalyzing'), 'info')
+      // The analysis and every part run report into the Activity tab; show it
+      // straight away so the user is not left watching an idle Backup form.
+      setActiveTab('activity')
       const splitPlan = await window.go.main.App.CreateBackupSplitPlan(
         dirList,
         config['backup-id'] || hostname,
@@ -952,6 +976,8 @@ function App() {
     // One-shot mode - execute immediately
     showStatus(`${t('statusBackupStarting')}`, 'info')
     setProgress(5)
+    // Live progress, stats and log all live on the Activity tab now.
+    setActiveTab('activity')
 
     try {
       await StartBackup(
@@ -1350,6 +1376,7 @@ function App() {
   const NAV = [
     { id: 'servers', label: t('tabServers'), Icon: DatabaseIcon },
     { id: 'backup', label: t('tabBackup'), Icon: CloudArrowUpIcon },
+    { id: 'activity', label: t('tabActivity'), Icon: PulseIcon, live: !!(activity.run && activity.run.running) },
     { id: 'restore', label: t('tabRestore'), Icon: ArrowCounterClockwiseIcon },
     { id: 'about', label: t('tabAbout'), Icon: InfoIcon },
   ]
@@ -1370,7 +1397,7 @@ function App() {
 
       <div className="shell">
         <nav className="sidebar">
-          {NAV.map(({ id, label, Icon }) => (
+          {NAV.map(({ id, label, Icon, live }) => (
             <button
               key={id}
               type="button"
@@ -1381,6 +1408,7 @@ function App() {
             >
               <Icon size={17} />
               <span>{label}</span>
+              {live && <span className="live-dot" aria-hidden="true" />}
             </button>
           ))}
         </nav>
@@ -1793,49 +1821,17 @@ function App() {
             )}
           </div>
 
+          {/* Only a reminder that something is running: the full progress view
+              (ETA, throughput, chunk stats, log) now lives on the Activity tab. */}
           {progress > 0 && progress < 100 && (
             <div className="section">
-              <h3>{t('backupProgress')}</h3>
-
-              <div className="progress-meta" style={{ marginBottom: 'var(--s1)' }}>
+              <div className="progress-mini">
+                <div className="progress"><div className="progress-bar" style={{ width: `${progress}%` }} /></div>
                 <span className="progress-pct">{progress}%</span>
+                <button type="button" className="btn btn-sm" onClick={() => setActiveTab('activity')}>
+                  <PulseIcon size={13} />{t('activityOpenActivity')}
+                </button>
               </div>
-
-              <div className="progress">
-                <div className="progress-bar" style={{ width: `${progress}%` }} />
-              </div>
-
-              <div className="progress-meta">
-                {backupStats.eta !== null && (
-                  <span>{t('timeRemaining')} <span className="stat-value">{Math.floor(backupStats.eta / 60)}m {backupStats.eta % 60}s</span></span>
-                )}
-                {backupStats.speed > 0 && (
-                  <span>{t('speed')} <span className="stat-value">{backupStats.speed.toFixed(1)}%/s</span></span>
-                )}
-                {backupStats.startTime && (
-                  <span>{t('elapsedTime')} <span className="stat-value">{Math.floor((Date.now() - backupStats.startTime) / 1000)}s</span></span>
-                )}
-                {backupStats.bytesDone > 0 && (
-                  <span>{t('dataLabel')} <span className="stat-value">
-                    {Math.round(backupStats.bytesDone / 1048576)}
-                    {backupStats.bytesTotal > 0 ? ` / ${Math.round(backupStats.bytesTotal / 1048576)}` : ''} MB
-                  </span></span>
-                )}
-                {(backupStats.newChunks > 0 || backupStats.reusedChunks > 0) && (
-                  <span>{t('chunksLabel')} <span className="stat-value">{backupStats.newChunks}</span> {t('chunksNew')} · <span className="stat-value">{backupStats.reusedChunks}</span> {t('chunksReused')}
-                    {backupStats.failedChunks > 0 && (
-                      <span className="state state-bad" style={{ marginLeft: 'var(--s2)' }}>{backupStats.failedChunks} {t('chunksFailed')}</span>
-                    )}
-                  </span>
-                )}
-              </div>
-
-              {backupStats.currentDir && (
-                <p className="form-hint mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {t('folderLabel')} {backupStats.currentDir}
-                </p>
-              )}
-
               {status.message && status.type === 'info' && (
                 <p className="form-hint">{status.message}</p>
               )}
@@ -1992,6 +1988,13 @@ function App() {
           {status.visible && activeTab === 'backup' && (
             <div className={`status ${status.type} visible`}>{status.message}</div>
           )}
+        </div>
+
+        {/* Activity Tab */}
+        <div className={`panel ${activeTab === 'activity' ? 'active' : ''}`}>
+          <h2>{t('activityTitle')}</h2>
+          <p className="panel-lede">{t('activityLede')}</p>
+          <ActivityPanel activity={activity} onGoToBackup={() => setActiveTab('backup')} />
         </div>
 
         {/* Restore Tab */}
