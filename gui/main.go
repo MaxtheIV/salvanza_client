@@ -204,6 +204,29 @@ func (a *App) SetProgressCallbacks(jobID string, onProgress func(string, float64
 // startup is called when the app starts
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+
+	// Live activity feed for the Activity tab (standalone mode: the engine runs
+	// in this process). In service mode the same events are re-emitted by
+	// activityPoller from the service's /activity endpoints, so the frontend has
+	// one code path. Guarded on a.ctx so a headless App never touches Wails.
+	activity.SetSinks(
+		func(s api.ActivitySnapshot) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "activity:run", s)
+			}
+		},
+		func(s api.BackupProgressStats) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "backup:stats", s)
+			}
+		},
+		func(entries []api.RunLogEntry) {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "backup:log", map[string]interface{}{"entries": entries})
+			}
+		},
+	)
+
 	writeDebugLog("App.startup() called")
 
 	// Detect execution mode (Service vs Standalone)
@@ -900,24 +923,9 @@ func (a *App) startBackupDirect(backupType string, backupDirs []string, driveLet
 		},
 	}
 
-	// Structured live stats + final structured result for the GUI (standalone mode).
-	// In the service process there is no Wails runtime, and the service-mode stats
-	// bridge is a separate backlog item (service-mode progress), so we only emit here.
-	opts.OnStats = func(stats *BackupProgressStats) {
-		if a.isServiceProcess || a.ctx == nil {
-			return
-		}
-		runtime.EventsEmit(a.ctx, "backup:stats", map[string]interface{}{
-			"percent":      stats.Percent * 100,
-			"bytesDone":    stats.BytesDone,
-			"bytesTotal":   stats.BytesTotal,
-			"newChunks":    stats.NewChunks,
-			"reusedChunks": stats.ReusedChunks,
-			"failedChunks": stats.FailedChunks,
-			"currentDir":   stats.CurrentDir,
-			"message":      stats.Message,
-		})
-	}
+	// Final structured result for the GUI (standalone mode). Live progress no longer
+	// travels through opts: the engine feeds the process-wide activity tracker and
+	// the sinks registered in startup() emit backup:stats / backup:log / activity:run.
 	opts.OnResult = func(status *BackupStatus) {
 		if a.isServiceProcess || a.ctx == nil {
 			return

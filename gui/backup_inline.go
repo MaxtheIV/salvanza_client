@@ -47,9 +47,12 @@ type BackupOptions struct {
 	// additive: OnComplete keeps firing with the success bool for existing
 	// consumers. OnResult is the source the sidecar (Group 1) and rich history read.
 	OnResult func(*BackupStatus)
-	// OnStats delivers structured live progress so the GUI can show real
-	// statistics instead of parsing them out of the progress message string.
-	OnStats func(*BackupProgressStats)
+	// dirIndexBase offsets the 1-based directory index reported to the activity
+	// tracker. A multi-folder run is executed as one internal backup per folder
+	// (each folder is its own PBS group), and each of those only sees a single
+	// directory — the offset keeps "directory i of N" honest across the whole run.
+	// Internal wiring only; never set by callers outside this file.
+	dirIndexBase int
 }
 
 // isFatalSessionError returns true for errors that make the current PBS session
@@ -153,29 +156,27 @@ func calculateDirSizeCtx(ctx context.Context, path string) (uint64, error) {
 }
 
 type ChunkState struct {
-	assignments         []string
+	assignments        []string
 	assignmentsOffset  []uint64
-	pos                 uint64
-	wrid                uint64
-	chunkcount          uint64
-	chunkdigests        hash.Hash
+	pos                uint64
+	wrid               uint64
+	chunkcount         uint64
+	chunkdigests       hash.Hash
 	currentChunk       []byte
-	C                   pbscommon.Chunker
-	newchunk            *atomic.Uint64
-	reusechunk          *atomic.Uint64
-	failedchunk         *atomic.Uint64     // Track failed chunk uploads
-	knownChunks         *hashmap.Map[string, bool]
-	onProgress          func(float64, string)
-	onStats             func(*BackupProgressStats) // Structured live stats for the GUI (nil for the catalog stream)
-	currentDir          string                     // Directory currently being archived, for the stats payload
-	lastProgressReport  uint64
-	lastProgressPercent float64            // Track last reported percentage to prevent backwards progress
-	totalSize           *atomic.Uint64     // Total size, updated by background scan
-	uploadErrors        []string           // Collect upload errors to report at the end
-	errorsMutex         sync.Mutex         // Protect uploadErrors slice
+	C                  pbscommon.Chunker
+	newchunk           *atomic.Uint64
+	reusechunk         *atomic.Uint64
+	failedchunk        *atomic.Uint64 // Track failed chunk uploads
+	knownChunks        *hashmap.Map[string, bool]
+	onProgress         func(float64, string)
+	currentDir         string // Directory currently being archived, for the log message
+	lastProgressReport uint64
+	totalSize          *atomic.Uint64 // Total size, updated by background scan
+	uploadErrors       []string       // Collect upload errors to report at the end
+	errorsMutex        sync.Mutex     // Protect uploadErrors slice
 }
 
-func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, failedchunk *atomic.Uint64, knownChunks *hashmap.Map[string, bool], onProgress func(float64, string), totalSize *atomic.Uint64, onStats func(*BackupProgressStats), currentDir string) {
+func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, failedchunk *atomic.Uint64, knownChunks *hashmap.Map[string, bool], onProgress func(float64, string), totalSize *atomic.Uint64, currentDir string) {
 	c.assignments = make([]string, 0)
 	c.assignmentsOffset = make([]uint64, 0)
 	c.pos = 0
@@ -192,10 +193,8 @@ func (c *ChunkState) Init(newchunk *atomic.Uint64, reusechunk *atomic.Uint64, fa
 	c.failedchunk = failedchunk
 	c.knownChunks = knownChunks
 	c.onProgress = onProgress
-	c.onStats = onStats
 	c.currentDir = currentDir
 	c.lastProgressReport = 0
-	c.lastProgressPercent = 0.0
 	c.totalSize = totalSize
 	c.uploadErrors = make([]string, 0)
 }
@@ -283,15 +282,8 @@ func (c *ChunkState) HandleData(b []byte, client *pbscommon.PBSClient) error {
 						sizeMB, c.newchunk.Load(), c.reusechunk.Load())
 				}
 
-				// Calculate progress based on total size if available
-				var progress float64
 				totalSize := c.totalSize.Load()
 				if totalSize > 0 {
-					// Progress from 10% to 90% based on bytes processed
-					progress = 0.1 + (float64(c.pos)/float64(totalSize))*0.8
-					if progress > 0.9 {
-						progress = 0.9
-					}
 					if failed > 0 {
 						msg = fmt.Sprintf("Traité: %d / %d MB (New: %d, Reused: %d, ⚠️ Failed: %d chunks)",
 							sizeMB, totalSize/(1024*1024), c.newchunk.Load(), c.reusechunk.Load(), failed)
@@ -299,35 +291,13 @@ func (c *ChunkState) HandleData(b []byte, client *pbscommon.PBSClient) error {
 						msg = fmt.Sprintf("Traité: %d / %d MB (New: %d, Reused: %d chunks)",
 							sizeMB, totalSize/(1024*1024), c.newchunk.Load(), c.reusechunk.Load())
 					}
-				} else {
-					// No total size yet, show indeterminate progress
-					progress = 0.1 + float64(sizeMB%100)/1000.0 // Slowly increment from 10%
-					if progress > 0.5 {
-						progress = 0.5
-					}
 				}
 
-				// Never report backwards progress - totalSize can increase during backup
-				if progress < c.lastProgressPercent {
-					progress = c.lastProgressPercent
-				}
-				c.lastProgressPercent = progress
-
-				c.onProgress(progress, msg)
-
-				// Structured live stats for the GUI (same cadence as the message).
-				if c.onStats != nil {
-					c.onStats(&BackupProgressStats{
-						Percent:      progress,
-						BytesDone:    c.pos,
-						BytesTotal:   totalSize,
-						NewChunks:    c.newchunk.Load(),
-						ReusedChunks: c.reusechunk.Load(),
-						FailedChunks: failed,
-						CurrentDir:   c.currentDir,
-						Message:      msg,
-					})
-				}
+				// Run-level percent / ETA are owned by the activity tracker; it also
+				// forwards the structured stats to the GUI. The 10%→90% mapping that
+				// used to live here is gone: the bar now shows real bytes.
+				stats := activity.Progress(c.pos, c.newchunk.Load(), c.reusechunk.Load(), failed, msg)
+				c.onProgress(stats.Percent, msg)
 			}
 
 			c.currentChunk = make([]byte, 0)
@@ -459,6 +429,31 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	runLogger := StartBackupRunLog(runLogID)
 	defer EndBackupRunLog(runLogger)
 
+	// Announce the run to the activity tracker (GUI Activity tab / API /activity).
+	// BackupID may still be empty here — runBackupInlineInternal derives it and
+	// corrects the snapshot via SetBackupID.
+	activity.BeginRun(opts.BackupID, fmt.Sprintf("%s/%s", opts.BaseURL, opts.Datastore), len(opts.BackupDirs))
+	runEnded := false
+	endRun := func(success bool, outcome, message string) {
+		if runEnded {
+			return
+		}
+		runEnded = true
+		activity.EndRun(success, outcome, message)
+	}
+	// Any early return / panic path that did not report explicitly ends the run as
+	// failed so the GUI never shows a stuck "running" state. Registered BEFORE the
+	// recover defer so it runs AFTER it (defers are LIFO): that way returnErr
+	// already carries the panic error and the CRITICAL/stack-trace lines the
+	// recover handler logs are still flushed by EndRun.
+	defer func() {
+		if returnErr != nil {
+			endRun(false, string(OutcomeFailed), returnErr.Error())
+		} else {
+			endRun(false, string(OutcomeFailed), "backup ended without result")
+		}
+	}()
+
 	// CRITICAL: Panic recovery to prevent silent goroutine death (scheduler launches backups in goroutines)
 	defer func() {
 		if r := recover(); r != nil {
@@ -529,7 +524,21 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	// keep/drop the wrong folders. A single selected directory keeps the caller's
 	// backup-id (which may have been set explicitly, e.g. by a scheduled job).
 	if len(opts.BackupDirs) <= 1 {
-		return runBackupInlineInternal(opts)
+		// Tap OnResult (without displacing the caller's) so the tracker can end the
+		// run with the real 4-level outcome instead of the deferred failure fallback.
+		single := opts
+		var singleStatus *BackupStatus
+		single.OnResult = func(s *BackupStatus) {
+			singleStatus = s
+			if opts.OnResult != nil {
+				opts.OnResult(s)
+			}
+		}
+		err := runBackupInlineInternal(single)
+		if singleStatus != nil {
+			endRun(singleStatus.Outcome != OutcomeFailed, string(singleStatus.Outcome), singleStatus.Message)
+		}
+		return err
 	}
 
 	// Each folder runs as its own internal backup, but the per-folder terminal
@@ -537,7 +546,7 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	// the whole multi-folder run. Otherwise the first folder's OnComplete would
 	// finalize (and, in API mode, tear down) the job before the rest ran — losing
 	// later folders' status and breaking the honest-result contract. Live progress
-	// (OnProgress/OnStats) still flows per folder.
+	// (OnProgress and the activity tracker) still flows per folder.
 	aggStart := time.Now()
 	agg := &BackupStatus{Outcome: OutcomeVerifiedSuccess, BackupID: opts.BackupID, BackupTime: aggStart.Unix()}
 	var perDirErrors []string
@@ -551,10 +560,14 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 		baseID = hostname
 	}
 
-	for _, dir := range opts.BackupDirs {
+	for i, dir := range opts.BackupDirs {
 		dirOpts := opts
 		dirOpts.BackupDirs = []string{dir}
 		dirOpts.BackupID = GenerateBackupID(baseID, dir)
+		// The tracker sees one run with len(BackupDirs) directories, but each folder
+		// is a separate internal backup that only knows about its own single dir —
+		// without this offset every folder would report "directory 1 of N".
+		dirOpts.dirIndexBase = i
 		dirOpts.OnComplete = nil // suppress per-folder terminal callback; aggregated below
 		var dirStatus *BackupStatus
 		dirOpts.OnResult = func(s *BackupStatus) { dirStatus = s }
@@ -588,6 +601,7 @@ func RunBackupInline(opts BackupOptions) (returnErr error) {
 	if opts.OnResult != nil {
 		opts.OnResult(agg)
 	}
+	endRun(agg.Outcome != OutcomeFailed, string(agg.Outcome), agg.Message)
 	if len(perDirErrors) > 0 {
 		return fmt.Errorf("%s", agg.Message)
 	}
@@ -643,6 +657,8 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 		}
 	}
 	writeBackupLog(fmt.Sprintf("[DEBUG] BackupID set to: %s", opts.BackupID))
+	activity.Log("info", "Backup ID: "+opts.BackupID)
+	activity.SetBackupID(opts.BackupID)
 
 	// Default to "host" type for directory backups
 	if opts.BackupType == "" {
@@ -691,6 +707,7 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 		opts.Datastore,
 		opts.BackupID))
 
+	activity.SetPhase("connect")
 	writeBackupLog("[DEBUG] Creating PBS client struct")
 
 	// Parse compression level (default to fastest if empty or invalid)
@@ -738,6 +755,7 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 
 	for idx, dir := range opts.BackupDirs {
 		writeBackupLog(fmt.Sprintf("Starting backup of directory %d/%d: %s", idx+1, len(opts.BackupDirs), dir))
+		activity.BeginDir(opts.dirIndexBase+idx+1, dir)
 
 		// Each directory becomes its own PBS session (Connect → upload → Finish).
 		// On session-lost we wait for PBS to release the group lock, then retry once.
@@ -745,7 +763,7 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 		var err error
 		var dirBytes uint64
 		for attempt := 1; attempt <= maxDirAttempts; attempt++ {
-			dirBytes, err = backupDirectory(client, &newchunk, &reusechunk, &failedchunk, dir, opts.UseVSS, progress, opts.OnStats, opts.ExcludeList)
+			dirBytes, err = backupDirectory(client, &newchunk, &reusechunk, &failedchunk, dir, opts.UseVSS, progress, opts.ExcludeList)
 			if err == nil {
 				break
 			}
@@ -952,28 +970,29 @@ func runBackupInlineInternal(opts BackupOptions) (returnErr error) {
 	return nil
 }
 
-func backupDirectory(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, usevss bool, progress func(float64, string), onStats func(*BackupProgressStats), excludeList []string) (uint64, error) {
+func backupDirectory(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, usevss bool, progress func(float64, string), excludeList []string) (uint64, error) {
 	writeBackupLog(fmt.Sprintf("Starting backup of %s", backupdir))
 	originalPath := backupdir
 
 	if usevss {
 		var bytesArchived uint64
+		activity.SetPhase("vss")
 		err := snapshot.CreateVSSSnapshot([]string{backupdir}, func(snaps map[string]snapshot.SnapShot) error {
 			for _, snap := range snaps {
 				backupdir = snap.FullPath
 				break
 			}
 			var e error
-			bytesArchived, e = backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, onStats, excludeList)
+			bytesArchived, e = backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList)
 			return e
 		})
 		return bytesArchived, err
 	}
 
-	return backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, onStats, excludeList)
+	return backupReal(client, newchunk, reusechunk, failedchunk, backupdir, originalPath, usevss, progress, excludeList)
 }
 
-func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, originalPath string, vssUsed bool, progress func(float64, string), onStats func(*BackupProgressStats), excludeList []string) (returnBytes uint64, returnErr error) {
+func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *atomic.Uint64, backupdir string, originalPath string, vssUsed bool, progress func(float64, string), excludeList []string) (returnBytes uint64, returnErr error) {
 	// Panic recovery - critical to prevent silent crashes during backup
 	defer func() {
 		if r := recover(); r != nil {
@@ -1004,6 +1023,7 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 			writeBackupLog(fmt.Sprintf("WARNING: Size calculation had errors: %v", err))
 		}
 		totalSize.Store(size)
+		activity.SetDirTotal(size)
 		writeBackupLog(fmt.Sprintf("Total size calculated: %d MB", size/(1024*1024)))
 	}()
 
@@ -1011,6 +1031,15 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 	archive.ArchiveName = "backup.pxar.didx"
 	archive.ExcludeList = excludeList
 	archive.ExcludeRoot = originalPath // logical root for VSS-safe absolute-pattern matching
+
+	// Live per-entry feed for the Activity tab. Paths are mapped from the VSS
+	// shadow path back to the logical root the user selected.
+	archive.OnEntry = func(p string, size uint64, isDir bool) {
+		if backupdir != originalPath && strings.HasPrefix(p, backupdir) {
+			p = originalPath + strings.TrimPrefix(p, backupdir)
+		}
+		activity.EntryDone(p, size, isDir)
+	}
 
 	// Inject backup metadata into the PXAR archive root
 	hostname, _ := os.Hostname()
@@ -1046,10 +1075,10 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 	writeBackupLog(fmt.Sprintf("Known chunks: %d", knownChunks.Len()))
 
 	pxarChunk := ChunkState{}
-	pxarChunk.Init(newchunk, reusechunk, failedchunk, knownChunks, progress, totalSize, onStats, backupdir)
+	pxarChunk.Init(newchunk, reusechunk, failedchunk, knownChunks, progress, totalSize, backupdir)
 
 	pcat1Chunk := ChunkState{}
-	pcat1Chunk.Init(newchunk, reusechunk, failedchunk, knownChunks, nil, totalSize, nil, "")
+	pcat1Chunk.Init(newchunk, reusechunk, failedchunk, knownChunks, nil, totalSize, "")
 
 	pxarChunk.wrid, err = client.CreateDynamicIndex(archive.ArchiveName)
 	if err != nil {
@@ -1071,6 +1100,10 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 	if _, err = archive.WriteDir(backupdir, "", true); err != nil {
 		return 0, fmt.Errorf("failed to write directory archive: %w", err)
 	}
+
+	// The walk is over; everything below is index/blob/manifest finalization, so
+	// no further activity.Progress call can reset the phase back to "upload".
+	activity.SetPhase("finalize")
 
 	// Map VSS shadow-copy paths back to the original logical root so the status
 	// lists are meaningful to the user (no-op for non-VSS backups, where
@@ -1153,6 +1186,10 @@ func backupReal(client *pbscommon.PBSClient, newchunk, reusechunk, failedchunk *
 	if err != nil {
 		return 0, fmt.Errorf("failed to upload manifest after retries: %w", err)
 	}
+
+	// Fold this directory into the tracker's run-level byte accounting before the
+	// next one restarts ChunkState.pos at zero.
+	activity.EndDir(pxarChunk.pos, totalSize.Load())
 
 	// pxarChunk.pos is the true archived byte count for this directory (more
 	// accurate than the background size estimate, which only drives the %).

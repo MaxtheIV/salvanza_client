@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -125,7 +126,13 @@ func writeDebugLog(message string) {
 
 // writeBackupLog writes to backup log (backup operations).
 // Prefers the per-run logger if one is active, else falls back to the global.
+// Every line except chunk-level noise is mirrored into the in-memory run log
+// that feeds the GUI Activity tab; the file keeps the full detail.
 func writeBackupLog(message string) {
+	if !strings.HasPrefix(message, "New chunk[") && !strings.HasPrefix(message, "Reuse chunk[") {
+		activity.Log(classifyLogLevel(message), message)
+	}
+
 	currentBackupLoggerMu.RLock()
 	perRun := currentBackupLogger
 	currentBackupLoggerMu.RUnlock()

@@ -120,6 +120,14 @@ func (t *activityTracker) flushLog() {
 	}
 }
 
+// SetBackupID corrects the id announced by BeginRun once the engine has derived
+// it (the id is generated after BeginRun when the caller left it empty).
+func (t *activityTracker) SetBackupID(id string) {
+	t.mu.Lock()
+	t.snap.BackupID = id
+	t.mu.Unlock()
+}
+
 func (t *activityTracker) SetPhase(phase string) {
 	t.mu.Lock()
 	t.snap.Stats.Phase = phase
