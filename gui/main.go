@@ -260,6 +260,7 @@ func (a *App) startup(ctx context.Context) {
 		writeDebugLog("Background scheduler started (standalone mode)")
 	} else {
 		writeDebugLog("Service mode detected - scheduler runs in service")
+		a.startActivityPoller()
 	}
 
 	// Execute startup jobs (jobs with runAtStartup=true)
@@ -655,6 +656,7 @@ func (a *App) StartBackup(backupType string, backupDirs []string, driveLetters [
 		if a.apiClient.IsServiceAvailable() {
 			writeDebugLog("[Mode Detection] Service now available, switching to Service mode")
 			a.mode = api.ModeService
+			a.startActivityPoller()
 		}
 	}
 
@@ -705,14 +707,14 @@ func (a *App) startBackupViaService(backupType string, backupDirs []string, driv
 // pollBackupProgress polls the service for backup progress and emits events to GUI
 func (a *App) pollBackupProgress(jobID string) {
 	writeDebugLog(fmt.Sprintf("[Service Mode] Starting progress polling for job: %s", jobID))
-	ticker := time.NewTicker(3 * time.Second) // Poll every 3 seconds
+	ticker := time.NewTicker(1 * time.Second) // Poll every 1 second
 	defer ticker.Stop()
 
 	// Without a bound, a permanently-404ing job (evicted/collided entry, or a
 	// service restart that dropped the progress map) would poll forever. Give up
 	// after a run of consecutive failures so the goroutine can't leak.
 	consecutiveErrors := 0
-	const maxConsecutiveErrors = 20 // ~60s at 3s interval
+	const maxConsecutiveErrors = 60 // ~60s at 1s interval
 
 	for range ticker.C {
 		progress, err := a.apiClient.GetBackupStatus(jobID)
@@ -752,6 +754,53 @@ func (a *App) pollBackupProgress(jobID string) {
 			}
 			return
 		}
+	}
+}
+
+// startActivityPoller starts the service-mode activity poller exactly once.
+// Called from startup() when the GUI detects the service and from StartBackup()
+// when the mode flips to service later.
+func (a *App) startActivityPoller() {
+	a.activityPollOnce.Do(func() { go a.activityPoller() })
+}
+
+// activityPoller mirrors the service's /activity state into the same Wails
+// events the standalone sinks emit, so the frontend has one code path. It also
+// covers late join: a scheduled backup already running in the service shows up
+// as soon as the GUI opens. It never gives up — the service can come and go.
+func (a *App) activityPoller() {
+	var lastRunID string
+	var lastRunning, lastComplete bool
+	var since uint64
+	for {
+		interval := 3 * time.Second
+		snap, err := a.apiClient.GetActivity()
+		if err != nil {
+			writeDebugLog(fmt.Sprintf("[Activity] poll failed: %v", err))
+			time.Sleep(interval)
+			continue
+		}
+		if snap.RunID != lastRunID {
+			since = 0
+		}
+		changed := snap.RunID != lastRunID || snap.Running != lastRunning || snap.Complete != lastComplete
+		if a.ctx != nil && (snap.Running || changed) {
+			runtime.EventsEmit(a.ctx, "activity:run", *snap)
+			runtime.EventsEmit(a.ctx, "backup:stats", snap.Stats)
+		}
+		if snap.Running || changed {
+			if lg, err := a.apiClient.GetActivityLog(since); err == nil {
+				if len(lg.Entries) > 0 && a.ctx != nil {
+					runtime.EventsEmit(a.ctx, "backup:log", map[string]interface{}{"entries": lg.Entries})
+				}
+				since = lg.Next
+			}
+		}
+		lastRunID, lastRunning, lastComplete = snap.RunID, snap.Running, snap.Complete
+		if snap.Running {
+			interval = time.Second
+		}
+		time.Sleep(interval)
 	}
 }
 

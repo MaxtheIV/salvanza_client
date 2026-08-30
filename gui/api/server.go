@@ -233,7 +233,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		s.progressMutex.Unlock()
 
 		// The backup is finished; evict its progress entry after a grace period so
-		// the GUI (polling every 3s, stopping on Complete) still reads the final
+		// the GUI (polling every 1s, stopping on Complete) still reads the final
 		// status, while the map can't grow unbounded over the service's lifetime.
 		s.scheduleEviction(jobID)
 	}()

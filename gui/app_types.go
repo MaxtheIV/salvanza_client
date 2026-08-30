@@ -17,6 +17,7 @@ type App struct {
 	callbacksMap     map[string]*progressCallbacks
 	callbacksMutex   sync.RWMutex
 	isServiceProcess bool // True if running as Windows Service (never re-detect mode)
+	activityPollOnce sync.Once // activityPoller is started at most once per GUI process
 }
 
 // progressCallbacks stores the callback functions for a backup operation
