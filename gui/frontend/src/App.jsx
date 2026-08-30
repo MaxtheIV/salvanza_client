@@ -106,6 +106,20 @@ function activityReducer(state, action) {
     }
     case 'stats':
       return state.run ? { ...state, stats: action.stats } : state
+    // The backend stopped answering while it was reporting a running backup. We
+    // will never see this run's terminal event, so close it here rather than
+    // leaving the panel spinning forever, and record why in the log pane. The
+    // message is passed in already translated (no UI strings in the reducer).
+    case 'lost': {
+      if (!state.run || !state.run.running) return state
+      const entry = { seq: state.nextSeq, ts: new Date().toISOString(), level: 'error', msg: action.message }
+      return {
+        ...state,
+        run: { ...state.run, running: false, complete: true, success: false, message: action.message },
+        log: state.log.concat(entry).slice(-MAX_LOG_ENTRIES),
+        nextSeq: state.nextSeq + 1,
+      }
+    }
     case 'log': {
       const entries = action.entries || []
       if (!entries.length) return state
@@ -189,6 +203,13 @@ function App() {
   const [jobHistory, setJobHistory] = useState([])
   const [editingJobId, setEditingJobId] = useState(null) // Track which job is being edited
   const [activity, dispatchActivity] = useReducer(activityReducer, initialActivity)
+  // Last run id seen on an activity:run event, so a genuinely new run — and only
+  // a new run — may reset the monotonic percent (C-2).
+  const lastRunIdRef = useRef(null)
+  // The backup-events effect subscribes once ([] deps); capturing t directly would
+  // freeze the "lost contact" line in whichever language the app started in.
+  const tRef = useRef(t)
+  tRef.current = t
   const [status, setStatus] = useState({ message: '', type: '', visible: false })
 
   const [snapshots, setSnapshots] = useState([])
@@ -274,15 +295,29 @@ function App() {
     if (!EventsOn) return
 
     const unsubProgress = EventsOn('backup:progress', (data) => {
-      setProgress(Math.round(data.percent))
+      // Monotonic within a run: the engine legitimately reports 0 % during the
+      // indeterminate window (the folder size scan is still running) and, in
+      // service mode, /backup/status reports 0 for the whole run. Letting the bar
+      // fall back to 0 used to look like the backup had restarted (C-2).
+      setProgress((p) => Math.max(p, Math.round(data.percent)))
       showStatus(data.message, 'info', false)
     })
 
     // The Activity tab is driven entirely by the tracker: the run snapshot, the
     // structured stats emitted alongside progress, and the run log.
-    const unsubRun = EventsOn('activity:run', (snap) => dispatchActivity({ type: 'run', run: snap }))
+    const unsubRun = EventsOn('activity:run', (snap) => {
+      // A new run id is the only thing that may take the bar backwards.
+      if (snap && snap.run_id && lastRunIdRef.current !== snap.run_id) {
+        lastRunIdRef.current = snap.run_id
+        setProgress(0)
+      }
+      dispatchActivity({ type: 'run', run: snap })
+    })
     const unsubStats = EventsOn('backup:stats', (stats) => dispatchActivity({ type: 'stats', stats }))
     const unsubLog = EventsOn('backup:log', (data) => dispatchActivity({ type: 'log', entries: data.entries }))
+    // The service stopped answering /activity while a backup was running: close
+    // the run in the panel instead of spinning forever (spec §4).
+    const unsubLost = EventsOn('activity:lost', () => dispatchActivity({ type: 'lost', message: tRef.current('activityLostContact') }))
 
     const unsubComplete = EventsOn('backup:complete', (data) => {
       setProgress(data.success ? 100 : 0)
@@ -323,6 +358,7 @@ function App() {
       if (unsubRun) unsubRun()
       if (unsubStats) unsubStats()
       if (unsubLog) unsubLog()
+      if (unsubLost) unsubLost()
       if (unsubComplete) unsubComplete()
     }
   }, [])
@@ -782,9 +818,6 @@ function App() {
 
     try {
       showStatus(t('splitAnalyzing'), 'info')
-      // The analysis and every part run report into the Activity tab; show it
-      // straight away so the user is not left watching an idle Backup form.
-      setActiveTab('activity')
       const splitPlan = await window.go.main.App.CreateBackupSplitPlan(
         dirList,
         config['backup-id'] || hostname,
@@ -808,11 +841,17 @@ function App() {
           config.usevss,
           ''
         )
+        // Only now: a failed start throws, and the status banner is not rendered
+        // on the panel the user would have been moved to (C-3).
+        setActiveTab('activity')
         showStatus(`⏳ ${t('statusBackupRunning')}`, 'info')
         return
       }
 
       showStatus(tf('statusSplitLaunching', { n: splitPlan.length }), 'info')
+      // The analysis produced a real plan, so parts are about to run: the live
+      // view is now the useful one (C-3).
+      setActiveTab('activity')
 
       // Arm a one-shot listener for the next backup:complete BEFORE starting a
       // part, so a fast completion can't be missed. The backend emits this event
@@ -976,8 +1015,6 @@ function App() {
     // One-shot mode - execute immediately
     showStatus(`${t('statusBackupStarting')}`, 'info')
     setProgress(5)
-    // Live progress, stats and log all live on the Activity tab now.
-    setActiveTab('activity')
 
     try {
       await StartBackup(
@@ -989,6 +1026,10 @@ function App() {
         config.usevss,
         ''
       )
+      // Live progress, stats and log all live on the Activity tab now — but only
+      // switch once the start actually succeeded, otherwise the catch branch's
+      // error banner would render on a panel the user just left (C-3).
+      setActiveTab('activity')
       // Backup started in background - progress will be shown via events
       showStatus(`⏳ ${t('statusBackupRunning')}`, 'info')
     } catch (err) {
@@ -1373,10 +1414,16 @@ function App() {
     )
   }
 
+  // "Is a backup running" comes from the tracker snapshot, never from the percent:
+  // the percent is legitimately 0 during the indeterminate window and for the whole
+  // run in service mode, which used to re-enable the Start button seconds after the
+  // backup began (C-2).
+  const backupRunning = !!(activity.run && activity.run.running)
+
   const NAV = [
     { id: 'servers', label: t('tabServers'), Icon: DatabaseIcon },
     { id: 'backup', label: t('tabBackup'), Icon: CloudArrowUpIcon },
-    { id: 'activity', label: t('tabActivity'), Icon: PulseIcon, live: !!(activity.run && activity.run.running) },
+    { id: 'activity', label: t('tabActivity'), Icon: PulseIcon, live: backupRunning },
     { id: 'restore', label: t('tabRestore'), Icon: ArrowCounterClockwiseIcon },
     { id: 'about', label: t('tabAbout'), Icon: InfoIcon },
   ]
@@ -1823,7 +1870,7 @@ function App() {
 
           {/* Only a reminder that something is running: the full progress view
               (ETA, throughput, chunk stats, log) now lives on the Activity tab. */}
-          {progress > 0 && progress < 100 && (
+          {backupRunning && (
             <div className="section">
               <div className="progress-mini">
                 <div className="progress"><div className="progress-bar" style={{ width: `${progress}%` }} /></div>
@@ -1839,16 +1886,16 @@ function App() {
           )}
 
           <div className="btn-row">
-            <button className="btn btn-primary" onClick={handleStartBackup} disabled={progress > 0 && progress < 100}>
+            <button className="btn btn-primary" onClick={handleStartBackup} disabled={backupRunning}>
               {backupMode === 'oneshot' ? (
-                <><CloudArrowUpIcon size={15} />{progress > 0 && progress < 100 ? t('backupInProgress') : t('startBackup')}</>
+                <><CloudArrowUpIcon size={15} />{backupRunning ? t('backupInProgress') : t('startBackup')}</>
               ) : (
                 <><FloppyDiskIcon size={15} />{editingJobId ? t('updateSchedule') : t('saveSchedule')}</>
               )}
             </button>
 
             {backupMode === 'oneshot' && (
-              <button className="btn" onClick={() => setProgress(0)} disabled={progress === 0}>
+              <button className="btn" onClick={() => setProgress(0)} disabled={!backupRunning}>
                 <StopIcon size={15} />{t('stopBackup')}
               </button>
             )}
@@ -1995,6 +2042,10 @@ function App() {
           <h2>{t('activityTitle')}</h2>
           <p className="panel-lede">{t('activityLede')}</p>
           <ActivityPanel activity={activity} onGoToBackup={() => setActiveTab('backup')} />
+
+          {status.visible && activeTab === 'activity' && (
+            <div className={`status ${status.type} visible`}>{status.message}</div>
+          )}
         </div>
 
         {/* Restore Tab */}

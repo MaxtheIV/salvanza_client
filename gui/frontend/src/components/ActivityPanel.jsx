@@ -6,7 +6,7 @@ const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 }
 const FILTER_MIN = { all: 0, info: 1, warn: 2, error: 3 }
 
 export function formatBytesShort(bytes) {
-  if (!bytes || bytes < 1024) return `${bytes || 0} B`
+  if (!bytes || bytes < 1024) return `${Math.round(bytes || 0)} B`
   const units = ['KB', 'MB', 'GB', 'TB']
   let n = bytes / 1024
   let i = 0
@@ -156,6 +156,19 @@ export default function ActivityPanel({ activity, onGoToBackup }) {
       {running && s.current_file && (
         <p className="form-hint mono activity-current" title={s.current_file}>
           {t('activityCurrent')}: {s.current_file}
+        </p>
+      )}
+
+      {run.complete && (
+        <p className="form-hint">
+          {tf('activitySummary', {
+            outcome: t(outcomeKey(run.outcome, run.success)),
+            duration: formatDuration(s.elapsed_seconds) || '—',
+            data: formatBytesShort(s.bytes_done),
+            files: s.files_done || 0,
+            newChunks: s.new_chunks || 0,
+            reusedChunks: s.reused_chunks || 0,
+          })}
         </p>
       )}
 
