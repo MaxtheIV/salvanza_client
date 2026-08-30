@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Activity tab**: live view of the running backup with a bytes-accurate progress bar,
+  engine-computed time remaining and throughput, file/data/chunk/dedup statistics, the
+  current file, and a filterable, copyable log of milestones and per-file entries.
+  Works identically in standalone and service mode, and shows a backup the scheduler
+  started before the GUI was opened.
+- Local service API: `GET /activity` and `GET /activity/log?since=<seq>`.
+
+### Changed
+- Backup progress percent is now `bytes done / bytes total` over the whole run instead of a
+  10 %→90 % mapping; while a folder's size is still being measured the bar is
+  indeterminate instead of showing a made-up number.
+- Service-mode progress polling runs every second (was 3 s).
+
+### Fixed
+- Service mode showed "Starting backup..." with no progress until completion: the
+  progress-callback hook was only compiled into the GUI binary.
+
 ## [0.3.0] - 2026-07-02
 
 Minor-version milestone: **unattended deployment**. Nimbus Backup can now be
