@@ -2435,7 +2435,7 @@ git commit -m "feat(frontend): ActivityPanel component and styles" -m "Co-Author
 
 - [ ] **Step 1: Imports and Go-method capture**
 
-Add `import ActivityPanel from './components/ActivityPanel'` next to the other component imports, `useReducer` to the React import, and `PulseIcon` (or `PulseIcon`, see Task 10) to the phosphor import list.
+Add `import ActivityPanel from './components/ActivityPanel'` next to the other component imports, `useReducer` to the React import, and `PulseIcon` to the phosphor import list.
 
 In the `let …` declaration block add `GetActivity, GetActivityLog` and in the `if (window.go)` block add:
 ```js
