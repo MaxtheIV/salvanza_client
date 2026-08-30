@@ -305,6 +305,14 @@ type PXARArchive struct {
 	// the walked path differs from this, which is why pattern and entry are both
 	// reduced to paths relative to their respective roots before comparison.
 	ExcludeRoot string
+	// OnEntry, when set, is called once per archived entry (directory or regular
+	// file) after it has been fully written: files with their declared size,
+	// directories with size 0 after their children. It exists so the GUI can show
+	// a live "current file" and file counter without pbscommon depending on a
+	// logger. Skipped / excluded entries never reach it — they are reported via
+	// SkippedFiles / ReadErrors / ExcludedFiles instead.
+	OnEntry func(path string, size uint64, isDir bool)
+
 	// root is the toplevel WALKED path, captured on the first WriteDir call, used to
 	// compute each entry's path relative to the (possibly VSS shadow-copy) root.
 	root string
@@ -699,6 +707,10 @@ func (a *PXARArchive) WriteDir(path string, dirname string, toplevel bool) (Cata
 		}
 	}
 
+	if a.OnEntry != nil {
+		a.OnEntry(path, 0, true)
+	}
+
 	return CatalogDir{
 		Name: dirname,
 		Pos:  oldpos,
@@ -843,6 +855,10 @@ func (a *PXARArchive) WriteFile(path string, basename string) (CatalogFile, erro
 
 	if err := a.Flush(); err != nil {
 		return CatalogFile{}, err
+	}
+
+	if a.OnEntry != nil {
+		a.OnEntry(path, uint64(fileInfo.Size()), false)
 	}
 
 	return CatalogFile{
