@@ -999,7 +999,7 @@ td .row-actions {
     margin-bottom: var(--s2);
 }
 .activity-log-bar select { width: auto; }
-.btn-sm { padding: 2px var(--s2); font-size: var(--t-sm); }
+.activity-log-bar .btn-sm { padding: 2px var(--s2); font-size: var(--t-sm); }
 .log-pane {
     height: 40vh; min-height: 180px; overflow: auto;
     background: var(--surface-sunk); border: 1px solid var(--line); border-radius: var(--radius);
@@ -1012,7 +1012,7 @@ td .row-actions {
 .log-line.debug { opacity: 0.65; }
 .log-line.warn .log-level, .log-line.warn .log-msg { color: var(--warn); }
 .log-line.error .log-level, .log-line.error .log-msg { color: var(--danger); }
-.log-jump { position: absolute; right: var(--s3); bottom: var(--s3); }
+.log-jump { position: absolute; right: var(--s3); bottom: var(--s3); padding: 2px var(--s2); font-size: var(--t-sm); }
 
 .nav-item .live-dot {
     width: 7px; height: 7px; border-radius: 50%; background: var(--accent);

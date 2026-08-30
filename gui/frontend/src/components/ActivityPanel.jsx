@@ -53,6 +53,9 @@ export default function ActivityPanel({ activity, onGoToBackup }) {
   const [copied, setCopied] = useState(false)
   const paneRef = useRef(null)
   const pinnedRef = useRef(true)
+  // Mirrors pinnedRef in state so the "new lines" chip actually re-renders when
+  // pinning changes — a ref mutation alone doesn't trigger React to re-evaluate JSX.
+  const [pinned, setPinned] = useState(true)
 
   const visibleLog = useMemo(() => {
     const min = FILTER_MIN[filter] ?? 0
@@ -69,11 +72,14 @@ export default function ActivityPanel({ activity, onGoToBackup }) {
   const onScroll = () => {
     const el = paneRef.current
     if (!el) return
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+    const p = el.scrollHeight - el.scrollTop - el.clientHeight < 8
+    pinnedRef.current = p
+    setPinned((prev) => (prev === p ? prev : p))
   }
 
   const jumpToEnd = () => {
     pinnedRef.current = true
+    setPinned(true)
     const el = paneRef.current
     if (el) el.scrollTop = el.scrollHeight
   }
@@ -180,7 +186,7 @@ export default function ActivityPanel({ activity, onGoToBackup }) {
             </div>
           ))}
         </div>
-        {autoscroll && !pinnedRef.current && (
+        {autoscroll && !pinned && (
           <button type="button" className="btn btn-sm log-jump" onClick={jumpToEnd}>{t('activityNewLines')}</button>
         )}
       </div>
