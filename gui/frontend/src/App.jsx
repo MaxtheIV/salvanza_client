@@ -1,6 +1,36 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import {
+  ArrowClockwiseIcon,
+  ArrowCounterClockwiseIcon,
+  CaretDownIcon,
+  CaretRightIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  CloudArrowUpIcon,
+  DatabaseIcon,
+  DownloadSimpleIcon,
+  FileIcon,
+  FloppyDiskIcon,
+  FolderIcon,
+  FolderOpenIcon,
+  InfoIcon,
+  MagnifyingGlassIcon,
+  PencilSimpleIcon,
+  PlayIcon,
+  PlusIcon,
+  ShieldCheckIcon,
+  StarIcon,
+  StopIcon,
+  TrashIcon,
+  XIcon,
+} from '@phosphor-icons/react'
 import { useTranslation } from './i18n/i18nContext'
 import LanguageSwitcher from './components/LanguageSwitcher'
+import ThemeToggle from './components/ThemeToggle'
+// Bundled rather than fetched from nimbus.rdem-systems.com: this is a desktop
+// app that must render identically with no network, and the About screen should
+// not phone home just to draw a logo.
+import logoUrl from './assets/logo.webp'
 
 // Wails runtime imports (will be available when built with Wails)
 let GetConfigWithHostname, SaveConfig, TestConnection, StartBackup, ListSnapshots, ListSnapshotContents, GetSnapshotMeta, RestoreSnapshot, OpenRestoreDestDialog, ListPhysicalDisks, GetVersion, EventsOn, SearchFiles, CancelSearch
@@ -50,7 +80,7 @@ if (window.runtime) {
 }
 
 function App() {
-  const { t } = useTranslation()
+  const { t, tf } = useTranslation()
   const [activeTab, setActiveTab] = useState('servers')
   const [hostname, setHostname] = useState('')
   const [appVersion, setAppVersion] = useState('dev')
@@ -190,7 +220,7 @@ function App() {
           setSelectedDrives([disks[0].path])
         }
       }).catch(err => {
-        showStatus(`❌ Erreur lors de la détection des disques: ${err}`, 'error')
+        showStatus(`${t('statusDiskError')} ${err}`, 'error')
       })
     }
   }, [backupType])
@@ -204,7 +234,7 @@ function App() {
       const now = Date.now()
       const percent = Math.round(data.percent)
       setProgress(percent)
-      showStatus(`🔄 ${data.message}`, 'info', false)
+      showStatus(data.message, 'info', false)
 
       // Calculate speed and ETA
       setBackupStats(prev => {
@@ -253,7 +283,7 @@ function App() {
     const unsubComplete = EventsOn('backup:complete', (data) => {
       setProgress(data.success ? 100 : 0)
       setBackupStats({ startTime: null, lastUpdate: null, lastPercent: 0, speed: 0, eta: null, bytesDone: 0, bytesTotal: 0, newChunks: 0, reusedChunks: 0, failedChunks: 0, currentDir: '' })
-      showStatus(data.success ? '✅ ' + data.message : '❌ ' + data.message, data.success ? 'success' : 'error')
+      showStatus(data.success ? data.message : data.message, data.success ? 'success' : 'error')
 
       // Add to job history
       const historyEntry = {
@@ -281,12 +311,12 @@ function App() {
     if (!EventsOn) return
     const unsubP = EventsOn('restore:progress', (data) => {
       setRestoreProgress(Math.round((data.percent || 0) * 100))
-      showStatus(`🔄 ${data.message || ''}`, 'info', false)
+      showStatus(data.message || '', 'info', false)
     })
     const unsubC = EventsOn('restore:complete', (data) => {
       setRestoreLoading(false)
       setRestoreProgress(data.success ? 100 : 0)
-      showStatus(data.success ? `✅ ${data.message}` : `❌ ${data.message}`, data.success ? 'success' : 'error')
+      showStatus(data.message, data.success ? 'success' : 'error')
     })
     return () => {
       if (unsubP) unsubP()
@@ -311,7 +341,7 @@ function App() {
       const done = data.done || 0
       const total = data.total || 0
       const gb = ((data.bytes || 0) / (1024 * 1024 * 1024)).toFixed(1)
-      showStatus(`📊 ${t('splitAnalyzing')} ${done}/${total} (${gb} GB)`, 'info', false)
+      showStatus(`${t('splitAnalyzing')} ${done}/${total} (${gb} GB)`, 'info', false)
     })
     return () => { if (unsub) unsub() }
   }, [])
@@ -465,13 +495,13 @@ function App() {
       }
     } catch (err) {
       console.error('Failed to load PBS servers:', err)
-      showStatus(`❌ ${t('statusServerLoadError')} ${err}`, 'error')
+      showStatus(`${t('statusServerLoadError')} ${err}`, 'error')
     }
   }
 
   const handleAddPBSServer = async () => {
     if (!AddPBSServer) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -482,7 +512,7 @@ function App() {
       }
 
       await AddPBSServer(serverFormData)
-      showStatus(`✅ ${t('statusServerAdded')}`, 'success')
+      showStatus(`${t('statusServerAdded')}`, 'success')
 
       // Reset form and reload
       setServerFormData({
@@ -499,19 +529,19 @@ function App() {
       setEditingServer(null)
       await loadPBSServers()
     } catch (err) {
-      showStatus(`❌ Erreur: ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleUpdatePBSServer = async () => {
     if (!UpdatePBSServer) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
     try {
       await UpdatePBSServer(serverFormData)
-      showStatus(`✅ ${t('statusServerUpdated')}`, 'success')
+      showStatus(`${t('statusServerUpdated')}`, 'success')
 
       // Reset form and reload
       setServerFormData({
@@ -528,13 +558,13 @@ function App() {
       setEditingServer(null)
       await loadPBSServers()
     } catch (err) {
-      showStatus(`❌ Erreur: ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleDeletePBSServer = async (id) => {
     if (!DeletePBSServer) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -544,25 +574,25 @@ function App() {
 
     try {
       await DeletePBSServer(id)
-      showStatus(`✅ ${t('statusServerDeleted')}`, 'success')
+      showStatus(`${t('statusServerDeleted')}`, 'success')
       await loadPBSServers()
     } catch (err) {
-      showStatus(`❌ Erreur: ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleSetDefaultPBS = async (id) => {
     if (!SetDefaultPBSServer) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
     try {
       await SetDefaultPBSServer(id)
       setDefaultPBSID(id)
-      showStatus(`✅ ${t('statusServerSetDefault').replace('{id}', id)}`, 'success')
+      showStatus(`${t('statusServerSetDefault').replace('{id}', id)}`, 'success')
     } catch (err) {
-      showStatus(`❌ Erreur: ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
@@ -573,7 +603,7 @@ function App() {
 
   const handleTestPBSConnection = async (id) => {
     if (!TestPBSConnection) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -581,7 +611,7 @@ function App() {
       setServerStatus(prev => ({ ...prev, [id]: 'testing' }))
       await TestPBSConnection(id)
       setServerStatus(prev => ({ ...prev, [id]: 'online' }))
-      showStatus(`✅ ${t('statusConnectionSuccess').replace('{id}', id)}`, 'success')
+      showStatus(`${t('statusConnectionSuccess').replace('{id}', id)}`, 'success')
     } catch (err) {
       const server = pbsServers.find(s => s.id === id)
       // Self-signed cert + no fingerprint yet: offer to discover and pin it (TOFU).
@@ -594,17 +624,17 @@ function App() {
             await loadPBSServers()
             await TestPBSConnection(id)
             setServerStatus(prev => ({ ...prev, [id]: 'online' }))
-            showStatus(`✅ ${t('statusFingerprintPinned')}`, 'success')
+            showStatus(`${t('statusFingerprintPinned')}`, 'success')
             return
           }
         } catch (fpErr) {
-          showStatus(`❌ ${t('statusFingerprintFailed')} ${fpErr}`, 'error')
+          showStatus(`${t('statusFingerprintFailed')} ${fpErr}`, 'error')
           setServerStatus(prev => ({ ...prev, [id]: 'offline' }))
           return
         }
       }
       setServerStatus(prev => ({ ...prev, [id]: 'offline' }))
-      showStatus(`❌ ${t('statusConnectionFailed')} ${err}`, 'error')
+      showStatus(`${t('statusConnectionFailed')} ${err}`, 'error')
     }
   }
 
@@ -632,7 +662,7 @@ function App() {
 
   const handleSaveConfig = async () => {
     if (!SaveConfig) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -651,15 +681,15 @@ function App() {
       }
       await SaveConfig(trimmedConfig)
       setConfig(trimmedConfig)
-      showStatus(`✅ ${t('statusConfigSaved')}`, 'success')
+      showStatus(`${t('statusConfigSaved')}`, 'success')
     } catch (err) {
-      showStatus(`❌ Erreur : ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleTestConnection = async () => {
     if (!TestConnection) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -679,7 +709,7 @@ function App() {
 
     try {
       await TestConnection(testConfig)
-      showStatus(`✅ ${t('statusConnectionOK')}`, 'success')
+      showStatus(`${t('statusConnectionOK')}`, 'success')
     } catch (err) {
       // Self-signed cert + no fingerprint yet: discover, re-test pinned, fill the
       // form so a Save persists it (legacy single-server config).
@@ -690,15 +720,15 @@ function App() {
             // Reuse the already-normalized testConfig (trimmed fields) for the pinned retest.
             await TestConnection({ ...testConfig, certfingerprint: fp })
             setConfig(prev => ({ ...prev, certfingerprint: fp }))
-            showStatus(`✅ ${t('statusFingerprintPinnedSave')}`, 'success')
+            showStatus(`${t('statusFingerprintPinnedSave')}`, 'success')
             return
           }
         } catch (fpErr) {
-          showStatus(`❌ ${t('statusFingerprintFailed')} ${fpErr}`, 'error')
+          showStatus(`${t('statusFingerprintFailed')} ${fpErr}`, 'error')
           return
         }
       }
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
@@ -711,9 +741,9 @@ function App() {
       try {
         const loadedConfig = JSON.parse(evt.target.result)
         setConfig(loadedConfig)
-        showStatus(`✅ ${t('statusConfigLoaded')}`, 'success')
+        showStatus(`${t('statusConfigLoaded')}`, 'success')
       } catch (err) {
-        showStatus(`❌ ${t('statusInvalidJSON')}`, 'error')
+        showStatus(`${t('statusInvalidJSON')}`, 'error')
       }
     }
     reader.readAsText(file)
@@ -725,12 +755,12 @@ function App() {
   // returns one job per part; we then run a backup per part.
   const executeSplitBackup = async (dirList) => {
     if (!window.go || !window.go.main.App.CreateBackupSplitPlan) {
-      showStatus('❌ Split backup not available', 'error')
+      showStatus(t('errSplitUnavailable'), 'error')
       return
     }
 
     try {
-      showStatus(`📊 ${t('splitAnalyzing')}`, 'info')
+      showStatus(t('splitAnalyzing'), 'info')
       const splitPlan = await window.go.main.App.CreateBackupSplitPlan(
         dirList,
         config['backup-id'] || hostname,
@@ -743,7 +773,7 @@ function App() {
       // selected root. Fall back to a normal full backup of the roots, which
       // always captures everything.
       if (!splitPlan || splitPlan.length <= 1) {
-        showStatus(`🚀 ${t('statusBackupStarting')}`, 'info')
+        showStatus(`${t('statusBackupStarting')}`, 'info')
         setProgress(5)
         await StartBackup(
           backupType,
@@ -758,7 +788,7 @@ function App() {
         return
       }
 
-      showStatus(`🔄 Lancement de ${splitPlan.length} backups partiels...`, 'info')
+      showStatus(tf('statusSplitLaunching', { n: splitPlan.length }), 'info')
 
       // Arm a one-shot listener for the next backup:complete BEFORE starting a
       // part, so a fast completion can't be missed. The backend emits this event
@@ -769,7 +799,7 @@ function App() {
         const promise = new Promise((resolve) => {
           unsub = EventsOn('backup:complete', (data) => {
             if (typeof unsub === 'function') unsub()
-            resolve(data || { success: false, message: 'completion sans données' })
+            resolve(data || { success: false, message: t('errCompletionNoData') })
           })
         })
         return { promise, cancel: () => { if (typeof unsub === 'function') unsub() } }
@@ -781,7 +811,7 @@ function App() {
       for (let i = 0; i < splitPlan.length; i++) {
         const job = splitPlan[i]
         showStatus(
-          `📦 Backup ${job.index}/${job.total_jobs}: ${job.size_fmt}...`,
+          tf('statusSplitJobProgress', { i: job.index, n: job.total_jobs, size: job.size_fmt }),
           'info'
         )
 
@@ -803,11 +833,10 @@ function App() {
           // event will arrive, so cancel the wait and offer a retry.
           completion.cancel()
           const retry = window.confirm(
-            `Le backup ${job.index}/${job.total_jobs} n'a pas pu démarrer:\n${err}\n\n` +
-            `Réessayer cette partie ?`
+            tf('confirmSplitStartFailed', { i: job.index, n: job.total_jobs, err })
           )
           if (retry) { i--; continue }
-          failures.push(`Partie ${job.index}: démarrage impossible (${err})`)
+          failures.push(tf('splitFailureStart', { i: job.index, err }))
           continue
         }
 
@@ -815,42 +844,41 @@ function App() {
         const result = await completion.promise
         if (result.success) {
           succeeded++
-          showStatus(`✅ Backup ${job.index}/${job.total_jobs} terminé`, 'success')
+          showStatus(tf('statusSplitJobDone', { i: job.index, n: job.total_jobs }), 'success')
         } else {
           showStatus(
-            `❌ Backup ${job.index}/${job.total_jobs} échoué: ${result.message || ''}`,
+            tf('statusSplitJobFailed', { i: job.index, n: job.total_jobs, msg: result.message || '' }),
             'error'
           )
           const retry = window.confirm(
-            `Le backup ${job.index}/${job.total_jobs} a échoué:\n${result.message || ''}\n\n` +
-            `Réessayer cette partie avant de continuer ?`
+            tf('confirmSplitRetry', { i: job.index, n: job.total_jobs, msg: result.message || '' })
           )
           if (retry) { i--; continue }
-          failures.push(`Partie ${job.index}: ${result.message || 'échec'}`)
+          failures.push(tf('splitFailure', { i: job.index, msg: result.message || t('splitFailureGeneric') }))
         }
       }
 
       // Honest aggregate: only claim success when EVERY part actually succeeded.
       if (failures.length === 0) {
         showStatus(
-          `🎉 Tous les backups partiels terminés avec succès (${succeeded}/${splitPlan.length})`,
+          tf('statusBackupComplete', { done: succeeded, total: splitPlan.length }),
           'success'
         )
       } else {
         showStatus(
-          `⚠️ Backup partiel: ${succeeded}/${splitPlan.length} OK, ${failures.length} échec(s) :\n` +
-          failures.join('\n'),
+          tf('statusSplitPartial', { ok: succeeded, total: splitPlan.length, failed: failures.length }) +
+          '\n' + failures.join('\n'),
           'error'
         )
       }
     } catch (err) {
-      showStatus(`❌ Erreur split backup: ${err}`, 'error')
+      showStatus(`${t('statusSplitError')} ${err}`, 'error')
     }
   }
 
   const handleStartBackup = async () => {
     if (!StartBackup) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
 
@@ -858,12 +886,12 @@ function App() {
     const dirList = backupDirs.split('\n').map(d => d.trim()).filter(d => d)
 
     if (backupType === 'directory' && dirList.length === 0) {
-      showStatus('❌ Au moins un répertoire requis', 'error')
+      showStatus(t('errDirRequired'), 'error')
       return
     }
 
     if (backupType === 'machine' && selectedDrives.length === 0) {
-      showStatus('❌ Au moins un disque requis', 'error')
+      showStatus(t('errDiskRequired'), 'error')
       return
     }
 
@@ -881,7 +909,7 @@ function App() {
     // Scheduled mode - save or update job instead of executing immediately
     if (backupMode === 'scheduled') {
       if (!SaveScheduledJob || !UpdateScheduledJob) {
-        showStatus('❌ Fonction de planification non disponible', 'error')
+        showStatus(t('statusSchedulingUnavailable'), 'error')
         return
       }
 
@@ -903,26 +931,26 @@ function App() {
           // Update existing job
           await UpdateScheduledJob(jobData)
           setScheduledJobs(scheduledJobs.map(j => j.id === editingJobId ? jobData : j))
-          showStatus(`✅ Backup modifié pour ${scheduleTime}`, 'success')
+          showStatus(tf('statusScheduleUpdated', { time: scheduleTime }), 'success')
           setEditingJobId(null)
         } else {
           // Create new job
           await SaveScheduledJob(jobData)
           setScheduledJobs([...scheduledJobs, jobData])
-          showStatus(`✅ Backup planifié pour ${scheduleTime}`, 'success')
+          showStatus(tf('statusScheduleSaved', { time: scheduleTime }), 'success')
         }
         // Reset form after save
         setScheduleTime('02:00')
         setRunAtStartup(false)
         setBackupDirs('')
       } catch (err) {
-        showStatus(`❌ Erreur: ${err}`, 'error')
+        showStatus(`${t('statusError')} ${err}`, 'error')
       }
       return
     }
 
     // One-shot mode - execute immediately
-    showStatus(`🚀 ${t('statusBackupStarting')}`, 'info')
+    showStatus(`${t('statusBackupStarting')}`, 'info')
     setProgress(5)
 
     try {
@@ -939,21 +967,21 @@ function App() {
       showStatus(`⏳ ${t('statusBackupRunning')}`, 'info')
     } catch (err) {
       setProgress(0)
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleListSnapshots = async () => {
     if (!ListSnapshots) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
     if (!restoreBackupId) {
-      showStatus('❌ Backup ID requis', 'error')
+      showStatus(t('errBackupIDRequired'), 'error')
       return
     }
 
-    showStatus('🔍 Recherche des snapshots...', 'info')
+    showStatus(t('statusSearchingSnapshots'), 'info')
     setSelectedSnapshot(null)
     setSnapshotEntries([])
     setSelectedPaths(new Set())
@@ -963,15 +991,15 @@ function App() {
       const snaps = await ListSnapshots(restorePBSID || '', restoreBackupId)
       setSnapshots(snaps || [])
       setShowSnapshots(true)
-      showStatus(`✅ ${snaps.length} snapshot(s) trouvé(s)`, 'success')
+      showStatus(tf('statusSnapshotsFound', { n: snaps.length }), 'success')
     } catch (err) {
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
   const handleSelectSnapshot = async (snap, forceRefresh = false) => {
     if (!ListSnapshotContents) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
     setSelectedSnapshot(snap)
@@ -979,16 +1007,16 @@ function App() {
     setSnapshotEntries([])
     setSelectedPaths(new Set())
     setExpandedDirs(new Set())
-    showStatus(`📥 ${t('loadingSnapshotContents')}`, 'info')
+    showStatus(`${t('loadingSnapshotContents')}`, 'info')
     const effectiveBackupId = snap.backup_id || restoreBackupId
     try {
       // Backend uses the snapshot's actual backup_id (snap.backup_id) so split
       // backups list their real contents, not the partial search term.
       const entries = await ListSnapshotContents(restorePBSID || '', effectiveBackupId, snap.unix, forceRefresh)
       setSnapshotEntries(entries || [])
-      showStatus(`✅ ${(entries || []).length} ${t('entriesLoaded')}`, 'success')
+      showStatus(`${(entries || []).length} ${t('entriesLoaded')}`, 'success')
     } catch (err) {
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
     // Meta is informational — fire-and-forget. The listing call above has
     // already populated the cache, so this is a cheap cache hit. Failure is
@@ -1010,7 +1038,7 @@ function App() {
 
   const handleBrowseRestoreDest = async () => {
     if (!OpenRestoreDestDialog) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
     try {
@@ -1019,7 +1047,7 @@ function App() {
     } catch (err) {
       // In service mode the native picker is unavailable by design — guide the
       // user to the manual path field instead of flagging it as a failure.
-      showStatus(`ℹ️ ${err}`, 'info')
+      showStatus(`${err}`, 'info')
     }
   }
 
@@ -1037,11 +1065,11 @@ function App() {
 
   const handleSearch = async () => {
     if (!SearchFiles) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
     if (!searchQuery.trim()) {
-      showStatus('❌ ' + t('searchQueryRequired'), 'error')
+      showStatus('' + t('searchQueryRequired'), 'error')
       return
     }
     const prefix = (restoreBackupId || hostname || '').trim()
@@ -1060,9 +1088,9 @@ function App() {
       )
       setSearchResult(res)
       const n = (res && res.hits) ? res.hits.length : 0
-      showStatus(`✅ ${t('searchDone').replace('{n}', n)}`, 'success')
+      showStatus(`${t('searchDone').replace('{n}', n)}`, 'success')
     } catch (err) {
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     } finally {
       setSearchRunning(false)
     }
@@ -1118,11 +1146,11 @@ function App() {
 
   const handleRestoreSnapshot = async () => {
     if (!RestoreSnapshot) {
-      showStatus('❌ Wails runtime non disponible', 'error')
+      showStatus(t('errRuntimeUnavailable'), 'error')
       return
     }
     if (!selectedSnapshot) {
-      showStatus('❌ ' + t('selectSnapshotFirst'), 'error')
+      showStatus('' + t('selectSnapshotFirst'), 'error')
       return
     }
 
@@ -1134,7 +1162,7 @@ function App() {
     }
 
     if (effectiveMode !== 'original' && !restoreDestPath) {
-      showStatus('❌ ' + t('destinationRequired'), 'error')
+      showStatus('' + t('destinationRequired'), 'error')
       return
     }
 
@@ -1155,7 +1183,7 @@ function App() {
 
     setRestoreLoading(true)
     setRestoreProgress(0)
-    showStatus(`🔄 ${t('statusRestoring').replace('{time}', selectedSnapshot.time)}`, 'info')
+    showStatus(`${t('statusRestoring').replace('{time}', selectedSnapshot.time)}`, 'info')
 
     try {
       await RestoreSnapshot(
@@ -1174,7 +1202,7 @@ function App() {
       // Completion arrives via the restore:complete event.
     } catch (err) {
       setRestoreLoading(false)
-      showStatus(`❌ ${err}`, 'error')
+      showStatus(`${t('statusError')} ${err}`, 'error')
     }
   }
 
@@ -1276,34 +1304,41 @@ function App() {
     const isSelected = selectedPaths.has(entry.path)
     const indent = { paddingLeft: `${depth * 16}px` }
     const origin = absOriginPath(entry.path)
-    const rowTitle = origin ? t('originTooltip').replace('{path}', origin) : entry.path
+    const rowTitle = origin ? tf('originTooltip', { path: origin }) : entry.path
     return (
       <div key={entry.path}>
-        <div title={rowTitle} style={{ ...indent, display: 'flex', alignItems: 'center', padding: '4px 8px', cursor: 'pointer', borderBottom: '1px solid #f1f5f9' }}>
+        <div title={rowTitle} className="tree-row" style={indent}>
           <input
             type="checkbox"
             checked={isSelected}
             onChange={() => togglePathSelection(entry.path)}
-            style={{ marginRight: '8px' }}
           />
           {entry.is_dir ? (
-            <span onClick={() => toggleDir(entry.path)} style={{ cursor: 'pointer', userSelect: 'none', marginRight: '4px' }}>
-              {isExpanded ? '📂' : '📁'}
-            </span>
+            <button
+              type="button"
+              className="tree-toggle"
+              onClick={() => toggleDir(entry.path)}
+              aria-expanded={isExpanded}
+              aria-label={entry.path}
+            >
+              {isExpanded ? <CaretDownIcon size={12} /> : <CaretRightIcon size={12} />}
+            </button>
           ) : (
-            <span style={{ marginRight: '4px' }}>📄</span>
+            <span style={{ width: '12px', flexShrink: 0 }} />
           )}
+          <span className={`tree-icon${entry.is_dir ? ' is-dir' : ''}`}>
+            {entry.is_dir
+              ? (isExpanded ? <FolderOpenIcon size={15} /> : <FolderIcon size={15} />)
+              : <FileIcon size={15} />}
+          </span>
           <span
+            className="tree-name"
             onClick={() => entry.is_dir && toggleDir(entry.path)}
-            style={{ flex: 1, cursor: entry.is_dir ? 'pointer' : 'default', fontSize: '14px' }}
+            style={{ cursor: entry.is_dir ? 'pointer' : 'default' }}
           >
             {entry.path.split('/').pop() || entry.path}
           </span>
-          {!entry.is_dir && (
-            <span style={{ color: '#64748b', fontSize: '12px', marginLeft: '8px' }}>
-              {formatBytes(entry.size)}
-            </span>
-          )}
+          {!entry.is_dir && <span className="tree-size">{formatBytes(entry.size)}</span>}
         </div>
         {entry.is_dir && isExpanded && (childrenByDir.get(entry.path) || []).map(child =>
           renderTreeNode(child, childrenByDir, depth + 1)
@@ -1312,140 +1347,167 @@ function App() {
     )
   }
 
-  return (
-    <>
-      <div className="header">
-        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-          <div>
-            <h1>🛡️ {t('appTitle')}</h1>
-            <p>{t('appSubtitle')}</p>
-          </div>
-          <LanguageSwitcher />
-        </div>
-      </div>
+  const NAV = [
+    { id: 'servers', label: t('tabServers'), Icon: DatabaseIcon },
+    { id: 'backup', label: t('tabBackup'), Icon: CloudArrowUpIcon },
+    { id: 'restore', label: t('tabRestore'), Icon: ArrowCounterClockwiseIcon },
+    { id: 'about', label: t('tabAbout'), Icon: InfoIcon },
+  ]
 
-      <div className="container">
-        <div className="tabs">
-          <div className={`tab ${activeTab === 'servers' ? 'active' : ''}`} onClick={() => setActiveTab('servers')}>
-            {t('tabServers')}
-          </div>
-          <div className={`tab ${activeTab === 'backup' ? 'active' : ''}`} onClick={() => setActiveTab('backup')}>
-            {t('tabBackup')}
-          </div>
-          <div className={`tab ${activeTab === 'restore' ? 'active' : ''}`} onClick={() => setActiveTab('restore')}>
-            {t('tabRestore')}
-          </div>
-          <div className={`tab ${activeTab === 'about' ? 'active' : ''}`} onClick={() => setActiveTab('about')}>
-            {t('tabAbout')}
-          </div>
+  return (
+    <div className="app">
+      <header className="titlebar">
+        <div className="titlebar-brand">
+          <span className="titlebar-mark"><ShieldCheckIcon size={17} weight="fill" /></span>
+          <span className="titlebar-name">{t('appTitle')}</span>
+          <span className="titlebar-version">{appVersion}</span>
         </div>
+        <div className="titlebar-tools">
+          <LanguageSwitcher />
+          <ThemeToggle />
+        </div>
+      </header>
+
+      <div className="shell">
+        <nav className="sidebar">
+          {NAV.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              className="nav-item"
+              aria-current={activeTab === id ? 'page' : undefined}
+              onClick={() => setActiveTab(id)}
+              title={label}
+            >
+              <Icon size={17} />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+
+        <main className="content">
 
         {/* PBS Configuration Tab */}
-        <div className={`tab-content ${activeTab === 'servers' ? 'active' : ''}`}>
-          <h2>🖥️ {t('serversTitle')}</h2>
+        <div className={`panel ${activeTab === 'servers' ? 'active' : ''}`}>
+          <h2>{t('serversTitle')}</h2>
+          <p className="panel-lede">{t('multiPBSText')}</p>
 
-          {/* Show form first if no servers configured */}
           {pbsServers.length === 0 ? (
-            <>
-              <div className="info-box" style={{marginBottom: '20px', backgroundColor: '#eef2ff', borderLeft: '4px solid #667eea'}}>
-                👋 <strong>{t('welcomeMessage')}</strong> {t('welcomeText')}<br/>
-                {!config.baseurl && (
-                  <>
-                    <br/>
-                    <strong>📦 {t('noPBSYet')}</strong><br/>
-                    <a
-                      href={`${t('chooseBackupUrl')}?utm_source=NimbusGui&utm_medium=tooling&utm_campaign=version-${appVersion}&utm_content=first-setup`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{color: '#667eea', fontWeight: 'bold', textDecoration: 'underline'}}
-                    >
-                      {t('orderStorage')} →
-                    </a>
-                  </>
-                )}
-              </div>
-
-              {/* Add Server Form - Prominent when no servers */}
-              <div className="card">
-                <h3>➕ {t('addYourServer')}</h3>
-              <table style={{width: '100%', marginTop: '15px'}}>
-                <thead>
-                  <tr>
-                    <th>{t('name')}</th>
-                    <th>{t('url')}</th>
-                    <th>{t('datastore')}</th>
-                    <th>{t('status')}</th>
-                    <th>{t('actions')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pbsServers.map(server => (
-                    <tr key={server.id}>
-                      <td>
-                        <strong>{server.name}</strong>
-                        {server.id === defaultPBSID && <span style={{marginLeft: '5px', color: '#fbbf24'}}>⭐ {t('default')}</span>}
-                        {server.description && <div style={{fontSize: '0.85em', color: '#999'}}>{server.description}</div>}
-                      </td>
-                      <td>{server.baseurl}</td>
-                      <td>{server.datastore}/{server.namespace || '-'}</td>
-                      <td>
-                        {serverStatus[server.id] === 'testing' && <span style={{color: '#3b82f6'}}>🔄 {t('testing')}</span>}
-                        {serverStatus[server.id] === 'online' && <span style={{color: '#10b981'}}>🟢 {t('online')}</span>}
-                        {serverStatus[server.id] === 'offline' && <span style={{color: '#ef4444'}}>🔴 {t('offline')}</span>}
-                        {!serverStatus[server.id] && <span style={{color: '#999'}}>⚪ {t('untested')}</span>}
-                      </td>
-                      <td>
-                        <button onClick={() => handleTestPBSConnection(server.id)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em'}}>
-                          🔍 {t('test')}
-                        </button>
-                        <button onClick={() => handleEditServer(server)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em'}}>
-                          ✏️ {t('edit')}
-                        </button>
-                        {server.id !== defaultPBSID && (
-                          <button onClick={() => handleSetDefaultPBS(server.id)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em', backgroundColor: '#fbbf24'}}>
-                            ⭐ {t('setAsDefault')}
-                          </button>
-                        )}
-                        <button onClick={() => handleDeletePBSServer(server.id)} style={{padding: '5px 10px', fontSize: '0.9em', backgroundColor: '#ef4444', color: 'white'}}>
-                          🗑️ {t('delete')}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* Add/Edit Server Form */}
-          <div className="card">
-            <h3>{editingServer ? `✏️ ${t('editServer')}` : `➕ ${t('addYourServer')}`}</h3>
-
-            <div className="form-group">
-              <label>{t('serverName')}</label>
-              <input
-                type="text"
-                value={serverFormData.name}
-                onChange={(e) => setServerFormData({...serverFormData, name: e.target.value})}
-                placeholder="SSD Rapide"
-              />
+            <div className="empty">
+              <span className="empty-icon"><DatabaseIcon size={30} /></span>
+              <h3>{t('welcomeMessage')}</h3>
+              <p>{t('welcomeText')}</p>
+              {!config.baseurl && (
+                <p>
+                  <a
+                    href={`${t('chooseBackupUrl')}?utm_source=NimbusGui&utm_medium=tooling&utm_campaign=version-${appVersion}&utm_content=first-setup`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {t('orderStorage')}
+                  </a>
+                </p>
+              )}
             </div>
+          ) : (
+            <div className="section">
+              <h3>{t('configuredServers')} ({pbsServers.length})</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t('name')}</th>
+                      <th>{t('url')}</th>
+                      <th>{t('datastore')}</th>
+                      <th>{t('status')}</th>
+                      <th style={{ textAlign: 'right' }}>{t('actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pbsServers.map(server => (
+                      <tr key={server.id}>
+                        <td>
+                          <span className="cell-primary">{server.name}</span>
+                          {server.id === defaultPBSID && (
+                            <span className="badge" style={{ marginLeft: 'var(--s2)' }}>
+                              <StarIcon size={11} weight="fill" />{t('default')}
+                            </span>
+                          )}
+                          {server.description && <div className="cell-sub">{server.description}</div>}
+                        </td>
+                        <td className="mono">{server.baseurl}</td>
+                        <td>{server.datastore}{server.namespace ? `/${server.namespace}` : ''}</td>
+                        <td>
+                          {serverStatus[server.id] === 'testing' && <span className="state state-busy">{t('testing')}</span>}
+                          {serverStatus[server.id] === 'online' && <span className="state state-ok">{t('online')}</span>}
+                          {serverStatus[server.id] === 'offline' && <span className="state state-bad">{t('offline')}</span>}
+                          {!serverStatus[server.id] && <span className="state state-unknown">{t('untested')}</span>}
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            <button className="btn btn-quiet" onClick={() => handleTestPBSConnection(server.id)} title={t('test')}>
+                              <MagnifyingGlassIcon size={14} />{t('test')}
+                            </button>
+                            <button className="btn btn-quiet" onClick={() => handleEditServer(server)} title={t('edit')}>
+                              <PencilSimpleIcon size={14} />{t('edit')}
+                            </button>
+                            {server.id !== defaultPBSID && (
+                              <button className="btn btn-quiet" onClick={() => handleSetDefaultPBS(server.id)} title={t('setAsDefault')}>
+                                <StarIcon size={14} />{t('setAsDefault')}
+                              </button>
+                            )}
+                            <button className="btn btn-quiet is-danger" onClick={() => handleDeletePBSServer(server.id)} title={t('delete')}>
+                              <TrashIcon size={14} />{t('delete')}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="form-hint">{t('multiPBSExample')}</p>
+            </div>
+          )}
 
-            {!editingServer && (
+          {/* One form for both add and edit; the heading carries the mode. */}
+          <div className="section">
+            <h3>
+              {editingServer
+                ? t('editServer')
+                : pbsServers.length === 0 ? t('addYourServer') : t('addAnotherServer')}
+            </h3>
+
+            <div className="field-row">
               <div className="form-group">
-                <label>{t('serverID')}</label>
+                <label htmlFor="srv-name">{t('serverName')}</label>
                 <input
+                  id="srv-name"
                   type="text"
-                  value={serverFormData.id}
-                  onChange={(e) => setServerFormData({...serverFormData, id: e.target.value})}
-                  placeholder="pbs-ssd (laissez vide pour auto-génération)"
+                  value={serverFormData.name}
+                  onChange={(e) => setServerFormData({...serverFormData, name: e.target.value})}
+                  placeholder="SSD Rapide"
                 />
               </div>
-            )}
+
+              {!editingServer && (
+                <div className="form-group">
+                  <label htmlFor="srv-id">{t('serverID')}</label>
+                  <input
+                    id="srv-id"
+                    type="text"
+                    value={serverFormData.id}
+                    onChange={(e) => setServerFormData({...serverFormData, id: e.target.value})}
+                    placeholder={t('serverIDPlaceholder')}
+                  />
+                </div>
+              )}
+            </div>
 
             <div className="form-group">
-              <label>{t('serverURL')}</label>
+              <label htmlFor="srv-url">{t('serverURL')}</label>
               <input
+                id="srv-url"
                 type="text"
                 value={serverFormData.baseurl}
                 onChange={(e) => setServerFormData({...serverFormData, baseurl: e.target.value})}
@@ -1453,50 +1515,60 @@ function App() {
               />
             </div>
 
-            <div className="form-group">
-              <label>{t('authID')}</label>
-              <input
-                type="text"
-                value={serverFormData.authid}
-                onChange={(e) => setServerFormData({...serverFormData, authid: e.target.value})}
-                placeholder="backup@pbs!token-name"
-              />
+            <div className="field-row">
+              <div className="form-group">
+                <label htmlFor="srv-authid">{t('authID')}</label>
+                <input
+                  id="srv-authid"
+                  type="text"
+                  value={serverFormData.authid}
+                  onChange={(e) => setServerFormData({...serverFormData, authid: e.target.value})}
+                  placeholder="backup@pbs!token-name"
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="srv-secret">{t('secret')}</label>
+                <input
+                  id="srv-secret"
+                  type="password"
+                  value={serverFormData.secret}
+                  onChange={(e) => setServerFormData({...serverFormData, secret: e.target.value})}
+                  placeholder={serverFormData.secret_set ? t('secretKeepPlaceholder') : 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}
+                />
+              </div>
+            </div>
+
+            <div className="field-row">
+              <div className="form-group">
+                <label htmlFor="srv-datastore">{t('datastore')}</label>
+                <input
+                  id="srv-datastore"
+                  type="text"
+                  value={serverFormData.datastore}
+                  onChange={(e) => setServerFormData({...serverFormData, datastore: e.target.value})}
+                  placeholder="ssd-fast"
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="srv-namespace">{t('namespace')}</label>
+                <input
+                  id="srv-namespace"
+                  type="text"
+                  value={serverFormData.namespace}
+                  onChange={(e) => setServerFormData({...serverFormData, namespace: e.target.value})}
+                  placeholder="clients"
+                />
+              </div>
             </div>
 
             <div className="form-group">
-              <label>{t('secret')}</label>
+              <label htmlFor="srv-fp">{t('certFingerprint')}</label>
               <input
-                type="password"
-                value={serverFormData.secret}
-                onChange={(e) => setServerFormData({...serverFormData, secret: e.target.value})}
-                placeholder={serverFormData.secret_set ? '•••••••• (laisser vide pour conserver le token actuel)' : 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}
-              />
-            </div>
-
-            <div className="form-group">
-              <label>{t('datastore')}</label>
-              <input
+                id="srv-fp"
                 type="text"
-                value={serverFormData.datastore}
-                onChange={(e) => setServerFormData({...serverFormData, datastore: e.target.value})}
-                placeholder="ssd-fast"
-              />
-            </div>
-
-            <div className="form-group">
-              <label>{t('namespace')}</label>
-              <input
-                type="text"
-                value={serverFormData.namespace}
-                onChange={(e) => setServerFormData({...serverFormData, namespace: e.target.value})}
-                placeholder="clients"
-              />
-            </div>
-
-            <div className="form-group">
-              <label>{t('certFingerprint')}</label>
-              <input
-                type="text"
+                className="mono"
                 value={serverFormData.certfingerprint}
                 onChange={(e) => setServerFormData({...serverFormData, certfingerprint: e.target.value})}
                 placeholder="AA:BB:CC:DD:..."
@@ -1504,213 +1576,38 @@ function App() {
             </div>
 
             <div className="form-group">
-              <label>{t('description')}</label>
+              <label htmlFor="srv-desc">{t('description')}</label>
               <textarea
+                id="srv-desc"
                 value={serverFormData.description}
                 onChange={(e) => setServerFormData({...serverFormData, description: e.target.value})}
-                placeholder="Stockage SSD pour backups critiques"
+                placeholder={t('descriptionPlaceholder')}
                 rows="2"
               />
             </div>
 
-            <div style={{display: 'flex', gap: '10px', marginTop: '20px'}}>
+            <div className="btn-row">
               {editingServer ? (
                 <>
-                  <button onClick={handleUpdatePBSServer} style={{flex: 1}}>
-                    💾 {t('update')}
+                  <button className="btn btn-primary" onClick={handleUpdatePBSServer}>
+                    <FloppyDiskIcon size={15} />{t('update')}
                   </button>
-                  <button onClick={handleCancelEdit} style={{flex: 1, backgroundColor: '#999'}}>
-                    ❌ {t('cancel')}
+                  <button className="btn" onClick={handleCancelEdit}>
+                    <XIcon size={15} />{t('cancel')}
                   </button>
                 </>
               ) : (
-                <button onClick={handleAddPBSServer} style={{flex: 1}}>
-                  ➕ {t('addFirstServer')}
+                <button className="btn btn-primary" onClick={handleAddPBSServer}>
+                  <PlusIcon size={15} />{pbsServers.length === 0 ? t('addFirstServer') : t('addServer')}
                 </button>
               )}
             </div>
 
-            <div className="info-box" style={{marginTop: '20px'}}>
-              💡 <strong>{t('tipTitle')}</strong> {t('tipAPIToken')}<br/>
+            <div className="note" style={{ marginTop: 'var(--s5)' }}>
+              <strong>{t('tipTitle')}</strong> {t('tipAPIToken')}<br/>
               {t('tipAPITokenPath')}
             </div>
           </div>
-            </>
-          ) : (
-            <>
-              {/* Multi-PBS info for users with existing servers */}
-              <div className="info-box" style={{marginBottom: '20px'}}>
-                💡 <strong>{t('multiPBSInfo')}</strong> {t('multiPBSText')}<br/>
-                {t('multiPBSExample')}
-              </div>
-
-              {/* Server List */}
-              <div className="card" style={{marginBottom: '20px'}}>
-                <h3>{t('configuredServers')} ({pbsServers.length})</h3>
-
-                <table style={{width: '100%', marginTop: '15px'}}>
-                  <thead>
-                    <tr>
-                      <th>Nom</th>
-                      <th>URL</th>
-                      <th>Datastore</th>
-                      <th>Statut</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pbsServers.map(server => (
-                      <tr key={server.id}>
-                        <td>
-                          <strong>{server.name}</strong>
-                          {server.id === defaultPBSID && <span style={{marginLeft: '5px', color: '#fbbf24'}}>⭐ {t('default')}</span>}
-                          {server.description && <div style={{fontSize: '0.85em', color: '#999'}}>{server.description}</div>}
-                        </td>
-                        <td>{server.baseurl}</td>
-                        <td>{server.datastore}/{server.namespace || '-'}</td>
-                        <td>
-                          {serverStatus[server.id] === 'testing' && <span style={{color: '#3b82f6'}}>🔄 Test...</span>}
-                          {serverStatus[server.id] === 'online' && <span style={{color: '#10b981'}}>🟢 Online</span>}
-                          {serverStatus[server.id] === 'offline' && <span style={{color: '#ef4444'}}>🔴 Offline</span>}
-                          {!serverStatus[server.id] && <span style={{color: '#999'}}>⚪ Non testé</span>}
-                        </td>
-                        <td>
-                          <button onClick={() => handleTestPBSConnection(server.id)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em'}}>
-                            🔍 Tester
-                          </button>
-                          <button onClick={() => handleEditServer(server)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em'}}>
-                            ✏️ Modifier
-                          </button>
-                          {server.id !== defaultPBSID && (
-                            <button onClick={() => handleSetDefaultPBS(server.id)} style={{marginRight: '5px', padding: '5px 10px', fontSize: '0.9em', backgroundColor: '#fbbf24'}}>
-                              ⭐ Par défaut
-                            </button>
-                          )}
-                          <button onClick={() => handleDeletePBSServer(server.id)} style={{padding: '5px 10px', fontSize: '0.9em', backgroundColor: '#ef4444', color: 'white'}}>
-                            🗑️ Supprimer
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Add/Edit Server Form */}
-              <div className="card">
-                <h3>{editingServer ? `✏️ ${t('editServer')}` : `➕ ${t('addAnotherServer')}`}</h3>
-
-                <div className="form-group">
-                  <label>{t('serverName')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.name}
-                    onChange={(e) => setServerFormData({...serverFormData, name: e.target.value})}
-                    placeholder="SSD Rapide"
-                  />
-                </div>
-
-                {!editingServer && (
-                  <div className="form-group">
-                    <label>{t('serverID')}</label>
-                    <input
-                      type="text"
-                      value={serverFormData.id}
-                      onChange={(e) => setServerFormData({...serverFormData, id: e.target.value})}
-                      placeholder="pbs-ssd (laissez vide pour auto-génération)"
-                    />
-                  </div>
-                )}
-
-                <div className="form-group">
-                  <label>{t('serverURL')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.baseurl}
-                    onChange={(e) => setServerFormData({...serverFormData, baseurl: e.target.value})}
-                    placeholder="https://pbs-ssd.example.com:8007"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('authID')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.authid}
-                    onChange={(e) => setServerFormData({...serverFormData, authid: e.target.value})}
-                    placeholder="backup@pbs!token-name"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('secret')}</label>
-                  <input
-                    type="password"
-                    value={serverFormData.secret}
-                    onChange={(e) => setServerFormData({...serverFormData, secret: e.target.value})}
-                    placeholder={serverFormData.secret_set ? '•••••••• (laisser vide pour conserver le token actuel)' : 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('datastore')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.datastore}
-                    onChange={(e) => setServerFormData({...serverFormData, datastore: e.target.value})}
-                    placeholder="ssd-fast"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('namespace')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.namespace}
-                    onChange={(e) => setServerFormData({...serverFormData, namespace: e.target.value})}
-                    placeholder="clients"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('certFingerprint')}</label>
-                  <input
-                    type="text"
-                    value={serverFormData.certfingerprint}
-                    onChange={(e) => setServerFormData({...serverFormData, certfingerprint: e.target.value})}
-                    placeholder="AA:BB:CC:DD:..."
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label>{t('description')}</label>
-                  <textarea
-                    value={serverFormData.description}
-                    onChange={(e) => setServerFormData({...serverFormData, description: e.target.value})}
-                    placeholder="Stockage SSD pour backups critiques"
-                    rows="2"
-                  />
-                </div>
-
-                <div style={{display: 'flex', gap: '10px', marginTop: '20px'}}>
-                  {editingServer ? (
-                    <>
-                      <button onClick={handleUpdatePBSServer} style={{flex: 1}}>
-                        💾 Mettre à jour
-                      </button>
-                      <button onClick={handleCancelEdit} style={{flex: 1, backgroundColor: '#999'}}>
-                        ❌ Annuler
-                      </button>
-                    </>
-                  ) : (
-                    <button onClick={handleAddPBSServer} style={{flex: 1}}>
-                      ➕ {t('addServer')}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </>
-          )}
 
           {status.visible && activeTab === 'servers' && (
             <div className={`status ${status.type} visible`}>{status.message}</div>
@@ -1718,123 +1615,103 @@ function App() {
         </div>
 
         {/* Backup Tab */}
-        <div className={`tab-content ${activeTab === 'backup' ? 'active' : ''}`}>
+        <div className={`panel ${activeTab === 'backup' ? 'active' : ''}`}>
           <h2>{t('backupTitle')}</h2>
+          <p className="panel-lede">{t('backupLede')}</p>
 
-          <div className="form-group">
-            <label>{t('backupType')}</label>
-            <select value={backupType} onChange={(e) => setBackupType(e.target.value)}>
-              <option value="directory">📁 {t('backupTypeDirectory')}</option>
-              {/* <option value="machine">💾 {t('backupTypeMachine')}</option> */}
-            </select>
-          </div>
+          <div className="field-row">
+            <div className="form-group">
+              <label htmlFor="bk-type">{t('backupType')}</label>
+              <select id="bk-type" value={backupType} onChange={(e) => setBackupType(e.target.value)}>
+                <option value="directory">{t('backupTypeDirectory')}</option>
+                {/* <option value="machine">{t('backupTypeMachine')}</option> */}
+              </select>
+            </div>
 
-          {/* Backup Mode Toggle */}
-          <div className="form-group">
-            <label>{t('executionMode')}</label>
-            <div style={{display: 'flex', gap: '10px', marginTop: '10px'}}>
-              <button
-                onClick={() => setBackupMode('oneshot')}
-                style={{
-                  flex: 1,
-                  padding: '10px',
-                  backgroundColor: backupMode === 'oneshot' ? '#667eea' : '#e2e8f0',
-                  color: backupMode === 'oneshot' ? 'white' : '#4a5568',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold'
-                }}
-              >
-                <span className="compact-text-long">⚡ {t('oneshotMode')}</span>
-                <span className="compact-text-short">⚡ {t('oneshotModeShort')}</span>
-              </button>
-              <button
-                onClick={() => setBackupMode('scheduled')}
-                style={{
-                  flex: 1,
-                  padding: '10px',
-                  backgroundColor: backupMode === 'scheduled' ? '#667eea' : '#e2e8f0',
-                  color: backupMode === 'scheduled' ? 'white' : '#4a5568',
-                  border: 'none',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold'
-                }}
-              >
-                <span className="compact-text-long">📅 {t('scheduledMode')}</span>
-                <span className="compact-text-short">📅 {t('scheduledModeShort')}</span>
-              </button>
+            <div className="form-group">
+              <label>{t('executionMode')}</label>
+              <div className="segmented">
+                <button
+                  type="button"
+                  onClick={() => setBackupMode('oneshot')}
+                  aria-pressed={backupMode === 'oneshot'}
+                >
+                  <PlayIcon size={14} />{t('oneshotMode')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBackupMode('scheduled')}
+                  aria-pressed={backupMode === 'scheduled'}
+                >
+                  <ClockIcon size={14} />{t('scheduledMode')}
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Scheduling Options */}
           {backupMode === 'scheduled' && (
-            <div className="card" style={{marginTop: '20px', padding: '20px'}}>
-              <h3 style={{marginTop: 0}}>⏰ {t('schedulingConfig')}</h3>
+            <div className="section">
+              <h3>{t('schedulingConfig')}</h3>
 
               {editingJobId && (
-                <div className="info-box" style={{backgroundColor: '#fff3cd', borderColor: '#ffc107', marginBottom: '15px'}}>
-                  ✏️ <strong>{t('editMode')}</strong> - {t('editModeText')}
+                <div className="note note-warn">
+                  <strong>{t('editMode')}</strong> {t('editModeText')}
                 </div>
               )}
 
-              <div className="form-group">
-                <label>{t('dailyExecutionTime')}</label>
+              <div className="form-group" style={{ maxWidth: '200px' }}>
+                <label htmlFor="bk-time">{t('dailyExecutionTime')}</label>
                 <input
+                  id="bk-time"
                   type="time"
                   value={scheduleTime}
                   onChange={(e) => setScheduleTime(e.target.value)}
-                  style={{width: '200px', padding: '10px', fontSize: '16px'}}
                 />
               </div>
 
-              <div className="form-group">
-                <label style={{display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer'}}>
-                  <input
-                    type="checkbox"
-                    checked={runAtStartup}
-                    onChange={(e) => setRunAtStartup(e.target.checked)}
-                    style={{width: '20px', height: '20px', cursor: 'pointer'}}
-                  />
-                  <span>🚀 {t('runAtStartup')}</span>
-                </label>
-              </div>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={runAtStartup}
+                  onChange={(e) => setRunAtStartup(e.target.checked)}
+                />
+                <span className="check-label">{t('runAtStartup')}</span>
+              </label>
 
-              <div className="info-box" style={{backgroundColor: '#eef2ff'}}>
-                💡 {t('schedulingInfo')} <strong>{scheduleTime}</strong>
+              <div className="note note-accent">
+                {t('schedulingInfo')} <strong>{scheduleTime}</strong>
                 {runAtStartup && <><br/>{t('andAtStartup')}</>}
               </div>
             </div>
           )}
 
-          {backupType === 'directory' ? (
-            <div className="form-group">
-              <label>{t('directoriesToBackup')}</label>
-              <textarea
-                value={backupDirs}
-                onChange={(e) => {
-                  setBackupDirs(e.target.value)
-                  // Update config.backupdir with first directory for compatibility
-                  const dirs = e.target.value.split('\n').map(d => d.trim()).filter(d => d)
-                  setConfig({...config, backupdir: dirs[0] || ''})
-                }}
-                rows="4"
-                placeholder="C:\Data&#10;C:\Users&#10;D:\Documents"
-              />
-            </div>
-          ) : (
-            <>
+          <div className="section">
+            {backupType === 'directory' ? (
               <div className="form-group">
-                <label>{t('physicalDisksToBackup')}</label>
-                {physicalDisks.length === 0 ? (
-                  <div style={{padding: '10px', backgroundColor: '#f8f9fa', borderRadius: '4px'}}>
-                    🔍 {t('loadingDisks')}
-                  </div>
-                ) : (
-                  <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
-                    {physicalDisks.map(disk => (
-                      <label key={disk.path} style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+                <label htmlFor="bk-dirs">{t('directoriesToBackup')}</label>
+                <textarea
+                  id="bk-dirs"
+                  value={backupDirs}
+                  onChange={(e) => {
+                    setBackupDirs(e.target.value)
+                    // Update config.backupdir with first directory for compatibility
+                    const dirs = e.target.value.split('\n').map(d => d.trim()).filter(d => d)
+                    setConfig({...config, backupdir: dirs[0] || ''})
+                  }}
+                  rows="4"
+                  placeholder="C:\Data&#10;C:\Users&#10;D:\Documents"
+                />
+              </div>
+            ) : (
+              <>
+                <div className="form-group">
+                  <label>{t('physicalDisksToBackup')}</label>
+                  {physicalDisks.length === 0 ? (
+                    <p className="form-hint">{t('loadingDisks')}</p>
+                  ) : (
+                    physicalDisks.map(disk => (
+                      <label key={disk.path} className="check">
                         <input
                           type="checkbox"
                           checked={selectedDrives.includes(disk.path)}
@@ -1846,283 +1723,268 @@ function App() {
                             }
                           }}
                         />
-                        {disk.label}
+                        <span className="check-label">{disk.label}</span>
                       </label>
-                    ))}
-                  </div>
-                )}
-              </div>
+                    ))
+                  )}
+                </div>
 
-              <div className="form-group">
-                <label>{t('filesToExclude')}</label>
-                <textarea
-                  value={excludeList}
-                  onChange={(e) => setExcludeList(e.target.value)}
-                  rows="4"
-                  placeholder="*.tmp&#10;*.log&#10;C:\Windows\Temp"
-                />
-              </div>
-            </>
-          )}
+                <div className="form-group">
+                  <label htmlFor="bk-exclude">{t('filesToExclude')}</label>
+                  <textarea
+                    id="bk-exclude"
+                    value={excludeList}
+                    onChange={(e) => setExcludeList(e.target.value)}
+                    rows="4"
+                    placeholder="*.tmp&#10;*.log&#10;C:\Windows\Temp"
+                  />
+                </div>
+              </>
+            )}
 
-          <div className="form-group">
-            <label>{t('backupID')}</label>
-            <input
-              type="text"
-              value={config['backup-id']}
-              onChange={(e) => setConfig({...config, 'backup-id': e.target.value})}
-              placeholder={t('backupIDPlaceholder')}
-            />
-          </div>
+            <div className="form-group">
+              <label htmlFor="bk-id">{t('backupID')}</label>
+              <input
+                id="bk-id"
+                type="text"
+                value={config['backup-id']}
+                onChange={(e) => setConfig({...config, 'backup-id': e.target.value})}
+                placeholder={hostname || t('backupIDPlaceholderCustom')}
+              />
+              <p className="form-hint">{t('backupIDPlaceholder')}</p>
+            </div>
 
-          <div className="form-group">
-            <label>
+            <label className="check">
               <input
                 type="checkbox"
                 checked={config.usevss}
                 onChange={(e) => setConfig({...config, usevss: e.target.checked})}
               />
-              {t('useVSS')}
+              <span className="check-label">{t('useVSS')}</span>
             </label>
+
             {config.usevss && systemInfo.mode === 'Standalone' && !systemInfo.is_admin && (
-              <div className="info-box" style={{marginTop: '10px', backgroundColor: '#fff3cd', borderColor: '#ffc107'}}>
-                ⚠️ <strong>{t('vssAdminRequired')}</strong><br/>
+              <div className="note note-warn">
+                <strong>{t('vssAdminRequired')}</strong><br/>
                 {t('vssAdminHint')}
               </div>
             )}
             {config.usevss && systemInfo.service_available && (
-              <div className="info-box" style={{marginTop: '10px', backgroundColor: '#d1ecf1', borderColor: '#bee5eb'}}>
-                ℹ️ <strong>{t('vssServiceAvailable')}</strong><br/>
+              <div className="note note-ok">
+                <strong>{t('vssServiceAvailable')}</strong><br/>
                 {t('vssServiceHint')}
               </div>
             )}
+
+            {backupType === 'directory' && backupMode === 'oneshot' && (
+              <>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={splitFirstBackup}
+                    onChange={(e) => setSplitFirstBackup(e.target.checked)}
+                  />
+                  <span className="check-label">
+                    {t('splitFirstBackup')}
+                    <small>{t('splitFirstBackupHint')}</small>
+                  </span>
+                </label>
+              </>
+            )}
           </div>
 
-          {backupType === 'directory' && backupMode === 'oneshot' && (
-            <div className="form-group">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={splitFirstBackup}
-                  onChange={(e) => setSplitFirstBackup(e.target.checked)}
-                />
-                {t('splitFirstBackup')}
-              </label>
-              <div className="info-box" style={{marginTop: '10px', backgroundColor: '#f8f9fa', borderColor: '#dee2e6'}}>
-                ℹ️ {t('splitFirstBackupHint')}
-              </div>
-            </div>
-          )}
-
           {progress > 0 && progress < 100 && (
-            <div style={{marginTop: '20px', marginBottom: '20px', padding: '15px', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #dee2e6'}}>
-              <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
-                <strong style={{fontSize: '15px'}}>📊 {t('backupProgress')}</strong>
-                <span style={{fontSize: '18px', fontWeight: 'bold', color: '#0066cc'}}>{progress}%</span>
+            <div className="section">
+              <h3>{t('backupProgress')}</h3>
+
+              <div className="progress-meta" style={{ marginBottom: 'var(--s1)' }}>
+                <span className="progress-pct">{progress}%</span>
               </div>
 
-              <div className="progress" style={{height: '30px', marginBottom: '12px'}}>
-                <div
-                  className="progress-bar"
-                  style={{
-                    width: `${progress}%`,
-                    fontSize: '14px',
-                    lineHeight: '30px',
-                    transition: 'width 0.3s ease',
-                    fontWeight: 'bold'
-                  }}
-                >
-                  {progress}%
-                </div>
+              <div className="progress">
+                <div className="progress-bar" style={{ width: `${progress}%` }} />
               </div>
 
-              <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '10px'}}>
+              <div className="progress-meta">
                 {backupStats.eta !== null && (
-                  <div style={{fontSize: '13px', color: '#495057'}}>
-                    ⏱️ <strong>{t('timeRemaining')}</strong> {Math.floor(backupStats.eta / 60)}m {backupStats.eta % 60}s
-                  </div>
+                  <span>{t('timeRemaining')} <span className="stat-value">{Math.floor(backupStats.eta / 60)}m {backupStats.eta % 60}s</span></span>
                 )}
                 {backupStats.speed > 0 && (
-                  <div style={{fontSize: '13px', color: '#495057'}}>
-                    ⚡ <strong>{t('speed')}</strong> {backupStats.speed.toFixed(1)}%/s
-                  </div>
+                  <span>{t('speed')} <span className="stat-value">{backupStats.speed.toFixed(1)}%/s</span></span>
                 )}
                 {backupStats.startTime && (
-                  <div style={{fontSize: '13px', color: '#495057'}}>
-                    ⏰ <strong>{t('elapsedTime')}</strong> {Math.floor((Date.now() - backupStats.startTime) / 1000)}s
-                  </div>
+                  <span>{t('elapsedTime')} <span className="stat-value">{Math.floor((Date.now() - backupStats.startTime) / 1000)}s</span></span>
                 )}
                 {backupStats.bytesDone > 0 && (
-                  <div style={{fontSize: '13px', color: '#495057'}}>
-                    📦 <strong>Données :</strong> {Math.round(backupStats.bytesDone / 1048576)}
+                  <span>{t('dataLabel')} <span className="stat-value">
+                    {Math.round(backupStats.bytesDone / 1048576)}
                     {backupStats.bytesTotal > 0 ? ` / ${Math.round(backupStats.bytesTotal / 1048576)}` : ''} MB
-                  </div>
+                  </span></span>
                 )}
                 {(backupStats.newChunks > 0 || backupStats.reusedChunks > 0) && (
-                  <div style={{fontSize: '13px', color: '#495057'}}>
-                    🧩 <strong>Chunks :</strong> {backupStats.newChunks} new · {backupStats.reusedChunks} reused
-                    {backupStats.failedChunks > 0 ? (
-                      <span style={{color: '#c0392b', fontWeight: 'bold'}}> · {backupStats.failedChunks} échoués</span>
-                    ) : ''}
-                  </div>
-                )}
-                {backupStats.currentDir && (
-                  <div style={{fontSize: '13px', color: '#495057', gridColumn: '1 / -1', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
-                    📁 <strong>Dossier :</strong> {backupStats.currentDir}
-                  </div>
+                  <span>{t('chunksLabel')} <span className="stat-value">{backupStats.newChunks}</span> {t('chunksNew')} · <span className="stat-value">{backupStats.reusedChunks}</span> {t('chunksReused')}
+                    {backupStats.failedChunks > 0 && (
+                      <span className="state state-bad" style={{ marginLeft: 'var(--s2)' }}>{backupStats.failedChunks} {t('chunksFailed')}</span>
+                    )}
+                  </span>
                 )}
               </div>
 
+              {backupStats.currentDir && (
+                <p className="form-hint mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {t('folderLabel')} {backupStats.currentDir}
+                </p>
+              )}
+
               {status.message && status.type === 'info' && (
-                <div style={{marginTop: '10px', padding: '8px', backgroundColor: '#fff', borderRadius: '4px', fontSize: '13px', color: '#666', border: '1px solid #e9ecef'}}>
-                  {status.message}
-                </div>
+                <p className="form-hint">{status.message}</p>
               )}
             </div>
           )}
 
-          <button className="btn" onClick={handleStartBackup} disabled={progress > 0 && progress < 100}>
-            {backupMode === 'oneshot'
-              ? (progress > 0 && progress < 100 ? `⏳ ${t('backupInProgress')}` : `🚀 ${t('startBackup')}`)
-              : (editingJobId ? `✏️ ${t('updateSchedule')}` : `💾 ${t('saveSchedule')}`)
-            }
-          </button>
-          {backupMode === 'oneshot' && (
-            <button className="btn btn-secondary" onClick={() => setProgress(0)} disabled={progress === 0}>{t('stopBackup')}</button>
-          )}
-          {backupMode === 'scheduled' && editingJobId && (
-            <button className="btn btn-secondary" onClick={() => {
-              setEditingJobId(null)
-              setScheduleTime('02:00')
-              setRunAtStartup(false)
-              setBackupDirs('')
-              setExcludeList('')
-              setBackupType('directory')
-              setActiveTab('scheduled')
-              showStatus(`✖️ ${t('statusEditCancelled')}`, 'info')
-            }}>
-              ✖️ {t('cancel')}
+          <div className="btn-row">
+            <button className="btn btn-primary" onClick={handleStartBackup} disabled={progress > 0 && progress < 100}>
+              {backupMode === 'oneshot' ? (
+                <><CloudArrowUpIcon size={15} />{progress > 0 && progress < 100 ? t('backupInProgress') : t('startBackup')}</>
+              ) : (
+                <><FloppyDiskIcon size={15} />{editingJobId ? t('updateSchedule') : t('saveSchedule')}</>
+              )}
             </button>
-          )}
+
+            {backupMode === 'oneshot' && (
+              <button className="btn" onClick={() => setProgress(0)} disabled={progress === 0}>
+                <StopIcon size={15} />{t('stopBackup')}
+              </button>
+            )}
+
+            {backupMode === 'scheduled' && editingJobId && (
+              <button className="btn" onClick={() => {
+                setEditingJobId(null)
+                setScheduleTime('02:00')
+                setRunAtStartup(false)
+                setBackupDirs('')
+                setExcludeList('')
+                setBackupType('directory')
+                setActiveTab('scheduled')
+                showStatus(t('statusEditCancelled'), 'info')
+              }}>
+                <XIcon size={15} />{t('cancel')}
+              </button>
+            )}
+          </div>
 
           {/* Scheduled Jobs List */}
           {backupMode === 'scheduled' && scheduledJobs.length > 0 && (
-            <div className="card" style={{marginTop: '30px'}}>
-              <h3 style={{marginTop: 0}}>📅 {t('scheduledJobs')}</h3>
-              {scheduledJobs.map(job => (
-                <div key={job.id} style={{
-                  padding: '15px',
-                  marginBottom: '10px',
-                  backgroundColor: '#f8f9fa',
-                  borderRadius: '8px',
-                  border: '1px solid #dee2e6'
-                }}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                    <div>
-                      <strong>{job.name}</strong>
-                      <div style={{fontSize: '14px', color: '#6c757d', marginTop: '5px'}}>
-                        ⏰ {job.scheduleTime} {job.runAtStartup && '• 🚀 Au démarrage'}
-                      </div>
-                      <div style={{fontSize: '13px', color: '#6c757d', marginTop: '3px'}}>
-                        📁 {job.backupDirs.join(', ')}
-                      </div>
-                    </div>
-                    <div style={{display: 'flex', gap: '10px'}}>
-                      <button
-                        className="btn"
-                        style={{padding: '8px 15px', fontSize: '14px'}}
-                        onClick={() => {
-                          // Load job data into form for editing
-                          setEditingJobId(job.id)
-                          setBackupMode('scheduled')
-                          setScheduleTime(job.scheduleTime)
-                          setRunAtStartup(job.runAtStartup)
-                          setBackupDirs(job.backupDirs.join('\n'))
-                          setConfig({...config, 'backup-id': job.backupId, usevss: job.useVSS})
-                          setBackupType(job.backupType)
-                          setExcludeList(job.excludeList.join('\n'))
-                          // Switch to backup tab to show the form
-                          setActiveTab('backup')
-                          showStatus(`✏️ ${t('editModeInfo')}`, 'info')
-                          window.scrollTo({top: 0, behavior: 'smooth'})
-                        }}
-                      >
-                        ✏️ {t('editJob')}
-                      </button>
-                      <button
-                        className="btn btn-secondary"
-                        style={{padding: '8px 15px', fontSize: '14px'}}
-                        onClick={async () => {
-                          try {
-                            await DeleteScheduledJob(job.id)
-                            setScheduledJobs(scheduledJobs.filter(j => j.id !== job.id))
-                            showStatus(t('statusJobDeleted'), 'success')
-                            // Cancel edit mode if deleting the job being edited
-                            if (editingJobId === job.id) {
-                              setEditingJobId(null)
-                            }
-                          } catch (err) {
-                            showStatus(`❌ Erreur: ${err}`, 'error')
-                          }
-                        }}
-                      >
-                        🗑️ {t('deleteJob')}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+            <div className="section">
+              <h3>{t('scheduledJobs')}</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t('name')}</th>
+                      <th>{t('dailyExecutionTime')}</th>
+                      <th>{t('directoriesToBackup')}</th>
+                      <th style={{ textAlign: 'right' }}>{t('actions')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scheduledJobs.map(job => (
+                      <tr key={job.id}>
+                        <td className="cell-primary">{job.name}</td>
+                        <td>
+                          {job.scheduleTime}
+                          {job.runAtStartup && <div className="cell-sub">{t('atStartup')}</div>}
+                        </td>
+                        <td className="mono">{job.backupDirs.join(', ')}</td>
+                        <td>
+                          <div className="row-actions">
+                            <button
+                              className="btn btn-quiet"
+                              onClick={() => {
+                                // Load job data into form for editing
+                                setEditingJobId(job.id)
+                                setBackupMode('scheduled')
+                                setScheduleTime(job.scheduleTime)
+                                setRunAtStartup(job.runAtStartup)
+                                setBackupDirs(job.backupDirs.join('\n'))
+                                setConfig({...config, 'backup-id': job.backupId, usevss: job.useVSS})
+                                setBackupType(job.backupType)
+                                setExcludeList(job.excludeList.join('\n'))
+                                // Switch to backup tab to show the form
+                                setActiveTab('backup')
+                                showStatus(t('editModeInfo'), 'info')
+                              }}
+                            >
+                              <PencilSimpleIcon size={14} />{t('editJob')}
+                            </button>
+                            <button
+                              className="btn btn-quiet is-danger"
+                              onClick={async () => {
+                                try {
+                                  await DeleteScheduledJob(job.id)
+                                  setScheduledJobs(scheduledJobs.filter(j => j.id !== job.id))
+                                  showStatus(t('statusJobDeleted'), 'success')
+                                  // Cancel edit mode if deleting the job being edited
+                                  if (editingJobId === job.id) {
+                                    setEditingJobId(null)
+                                  }
+                                } catch (err) {
+                                  showStatus(`${t('statusError')} ${err}`, 'error')
+                                }
+                              }}
+                            >
+                              <TrashIcon size={14} />{t('deleteJob')}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
           {/* Job History */}
           {jobHistory.length > 0 && (
-            <div className="card" style={{marginTop: '30px'}}>
-              <h3 style={{marginTop: 0}}>📜 {t('backupHistory')}</h3>
-              <div style={{maxHeight: '400px', overflowY: 'auto'}}>
-                {jobHistory.slice(0, 6).map(job => (
-                  <div key={job.id} style={{
-                    padding: '15px',
-                    marginBottom: '10px',
-                    backgroundColor: job.status === 'success' ? '#d4edda' : job.status === 'failed' ? '#f8d7da' : '#fff3cd',
-                    borderRadius: '8px',
-                    border: `1px solid ${job.status === 'success' ? '#c3e6cb' : job.status === 'failed' ? '#f5c6cb' : '#ffeaa7'}`
-                  }}>
-                    <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                      <div style={{flex: 1}}>
-                        <div style={{display: 'flex', alignItems: 'center', gap: '10px'}}>
-                          <span style={{fontSize: '20px'}}>
-                            {job.status === 'success' ? '✅' : job.status === 'failed' ? '❌' : '⏳'}
-                          </span>
-                          <strong>{job.name}</strong>
-                        </div>
-                        <div style={{fontSize: '13px', color: '#6c757d', marginTop: '5px', marginLeft: '30px'}}>
-                          🕐 {new Date(job.timestamp).toLocaleString('fr-FR')}
-                        </div>
-                        {job.message && (
-                          <div style={{fontSize: '13px', color: '#495057', marginTop: '5px', marginLeft: '30px'}}>
-                            💬 {job.message}
+            <div className="section">
+              <h3>{t('backupHistory')}</h3>
+              <div className="table-wrap">
+                <table>
+                  <tbody>
+                    {jobHistory.slice(0, 6).map(job => (
+                      <tr key={job.id}>
+                        <td style={{ width: '1%' }}>
+                          {job.status === 'success' && <span className="state state-ok" />}
+                          {job.status === 'failed' && <span className="state state-bad" />}
+                          {job.status !== 'success' && job.status !== 'failed' && <span className="state state-unknown" />}
+                        </td>
+                        <td>
+                          <span className="cell-primary">{job.name}</span>
+                          {job.message && <div className="cell-sub">{job.message}</div>}
+                        </td>
+                        <td className="cell-sub">{new Date(job.timestamp).toLocaleString(t('locale'))}</td>
+                        <td>
+                          <div className="row-actions">
+                            {job.status === 'failed' && (
+                              <button
+                                className="btn btn-quiet"
+                                onClick={() => {
+                                  // Re-run failed job
+                                  setBackupDirs(job.backupDirs.join('\n'))
+                                  setConfig({...config, 'backup-id': job.backupId, usevss: job.useVSS})
+                                  showStatus(t('configLoaded'), 'success')
+                                }}
+                              >
+                                <ArrowClockwiseIcon size={14} />{t('rerun')}
+                              </button>
+                            )}
                           </div>
-                        )}
-                      </div>
-                      {job.status === 'failed' && (
-                        <button
-                          className="btn"
-                          style={{padding: '8px 15px', fontSize: '14px'}}
-                          onClick={() => {
-                            // Re-run failed job
-                            setBackupDirs(job.backupDirs.join('\n'))
-                            setConfig({...config, 'backup-id': job.backupId, usevss: job.useVSS})
-                            showStatus(t('configLoaded'), 'success')
-                            window.scrollTo({top: 0, behavior: 'smooth'})
-                          }}
-                        >
-                          🔄 {t('rerun')}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -2133,33 +1995,26 @@ function App() {
         </div>
 
         {/* Restore Tab */}
-        <div className={`tab-content ${activeTab === 'restore' ? 'active' : ''}`}>
+        <div className={`panel ${activeTab === 'restore' ? 'active' : ''}`}>
           <h2>{t('restoreTitle')}</h2>
+          <p className="panel-lede">{t('restoreInfoText')} {t('restoreInfoText2')}</p>
 
-          {/* BETA Warning */}
-          <div style={{
-            backgroundColor: '#FEF3C7',
-            border: '2px solid #F59E0B',
-            borderRadius: '8px',
-            padding: '12px',
-            marginBottom: '20px',
-            color: '#92400E'
-          }}>
-            <strong>⚠️ {t('restoreBetaTitle')}</strong>
-            <p style={{margin: '8px 0 0 0', fontSize: '14px'}}>
-              {t('restoreBetaIntro')}
-              <br/>✅ {t('restoreBetaFilesDirs')}
-              <br/>✅ {t('restoreBetaSelective')}
-              <br/>✅ {t('restoreBetaTimestamps')}
-              <br/>❌ {t('restoreBetaACLs')}
-            </p>
+          <div className="note note-warn">
+            <strong>{t('restoreBetaTitle')}</strong><br/>{t('restoreBetaIntro')}
+            <ul className="plain-list" style={{ marginTop: 'var(--s2)' }}>
+              <li>{t('restoreBetaFilesDirs')}</li>
+              <li>{t('restoreBetaSelective')}</li>
+              <li>{t('restoreBetaTimestamps')}</li>
+              <li>{t('restoreBetaACLs')} <span className="faint">({t('comingSoon')})</span></li>
+            </ul>
           </div>
 
           {/* PBS server selector + Backup ID */}
-          <div style={{display: 'flex', gap: '15px', flexWrap: 'wrap'}}>
-            <div className="form-group" style={{flex: '1 1 240px'}}>
-              <label>{t('restorePBSServer')}</label>
+          <div className="field-row">
+            <div className="form-group">
+              <label htmlFor="rs-server">{t('restorePBSServer')}</label>
               <select
+                id="rs-server"
                 value={restorePBSID}
                 onChange={(e) => {
                   setRestorePBSID(e.target.value)
@@ -2171,48 +2026,44 @@ function App() {
                 {pbsServers.length === 0 && <option value="">{t('noPBSServer')}</option>}
                 {pbsServers.map(s => (
                   <option key={s.id} value={s.id}>
-                    {s.name} {s.id === defaultPBSID ? '⭐' : ''}
+                    {s.name}{s.id === defaultPBSID ? ` (${t('default')})` : ''}
                   </option>
                 ))}
               </select>
             </div>
-            <div className="form-group" style={{flex: '2 1 320px'}}>
-              <label>{t('backupIDToRestore')}</label>
+            <div className="form-group">
+              <label htmlFor="rs-id">{t('backupIDToRestore')}</label>
               <input
+                id="rs-id"
                 type="text"
                 value={restoreBackupId || hostname}
                 onChange={(e) => setRestoreBackupId(e.target.value)}
-                placeholder={hostname || "hostname ou ID personnalisé"}
+                placeholder={hostname || t('backupIDPlaceholderCustom')}
               />
             </div>
           </div>
 
-          <button className="btn" onClick={handleListSnapshots}>📋 {t('listSnapshots')}</button>
-          <button
-            className="btn"
-            type="button"
-            onClick={() => setShowSearch(v => !v)}
-            style={{marginLeft: '8px'}}
-          >
-            🔎 {t('searchTitle')}
-          </button>
+          <div className="btn-row">
+            <button className="btn btn-primary" onClick={handleListSnapshots}>
+              <ClockIcon size={15} />{t('listSnapshots')}
+            </button>
+            <button className="btn" type="button" onClick={() => setShowSearch(v => !v)} aria-expanded={showSearch}>
+              <MagnifyingGlassIcon size={15} />{t('searchTitle')}
+            </button>
+          </div>
 
           {showSearch && (
-            <div style={{
-              marginTop: '16px',
-              padding: '14px',
-              border: '1px solid #cbd5e1',
-              borderRadius: '8px',
-              backgroundColor: '#f8fafc'
-            }}>
-              <p style={{fontSize: '13px', color: '#64748b', marginTop: 0}}>
-                {t('searchHint').replace('{prefix}', (restoreBackupId || hostname || '?'))}
+            <div className="section">
+              <h3>{t('searchTitle')}</h3>
+              <p className="form-hint" style={{ marginBottom: 'var(--s3)' }}>
+                {tf('searchHint', { prefix: restoreBackupId || hostname || '?' })}
               </p>
 
-              <div style={{display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end'}}>
-                <div className="form-group" style={{flex: '2 1 280px', margin: 0}}>
-                  <label>{t('searchQueryLabel')}</label>
+              <div className="field-row">
+                <div className="form-group">
+                  <label htmlFor="rs-q">{t('searchQueryLabel')}</label>
                   <input
+                    id="rs-q"
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -2220,9 +2071,9 @@ function App() {
                     onKeyDown={(e) => { if (e.key === 'Enter' && !searchRunning) handleSearch() }}
                   />
                 </div>
-                <div className="form-group" style={{flex: '1 1 160px', margin: 0}}>
-                  <label>{t('searchModeLabel')}</label>
-                  <select value={searchMode} onChange={(e) => setSearchMode(e.target.value)}>
+                <div className="form-group">
+                  <label htmlFor="rs-mode">{t('searchModeLabel')}</label>
+                  <select id="rs-mode" value={searchMode} onChange={(e) => setSearchMode(e.target.value)}>
                     <option value="name">{t('searchModeName')}</option>
                     <option value="regex">{t('searchModeRegex')}</option>
                     <option value="path">{t('searchModePath')}</option>
@@ -2230,100 +2081,90 @@ function App() {
                 </div>
               </div>
 
-              <div style={{display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end', marginTop: '10px'}}>
-                <div className="form-group" style={{flex: '1 1 150px', margin: 0}}>
-                  <label>{t('searchFrom')}</label>
-                  <input type="date" value={searchFrom} onChange={(e) => setSearchFrom(e.target.value)} />
+              <div className="field-row">
+                <div className="form-group">
+                  <label htmlFor="rs-from">{t('searchFrom')}</label>
+                  <input id="rs-from" type="date" value={searchFrom} onChange={(e) => setSearchFrom(e.target.value)} />
                 </div>
-                <div className="form-group" style={{flex: '1 1 150px', margin: 0}}>
-                  <label>{t('searchTo')}</label>
-                  <input type="date" value={searchTo} onChange={(e) => setSearchTo(e.target.value)} />
+                <div className="form-group">
+                  <label htmlFor="rs-to">{t('searchTo')}</label>
+                  <input id="rs-to" type="date" value={searchTo} onChange={(e) => setSearchTo(e.target.value)} />
                 </div>
-                <label style={{display: 'flex', alignItems: 'center', gap: '8px', flex: '2 1 260px', fontSize: '14px'}}>
-                  <input
-                    type="checkbox"
-                    checked={searchAssembleMissing}
-                    onChange={(e) => setSearchAssembleMissing(e.target.checked)}
-                  />
-                  {t('searchAssembleMissing')}
-                </label>
               </div>
 
-              <div style={{marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center'}}>
-                <button className="btn" type="button" onClick={handleSearch} disabled={searchRunning}>
-                  {searchRunning ? `⏳ ${t('searching')}` : `🔎 ${t('searchButton')}`}
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={searchAssembleMissing}
+                  onChange={(e) => setSearchAssembleMissing(e.target.checked)}
+                />
+                <span className="check-label">{t('searchAssembleMissing')}</span>
+              </label>
+
+              <div className="btn-row">
+                <button className="btn btn-primary" type="button" onClick={handleSearch} disabled={searchRunning}>
+                  <MagnifyingGlassIcon size={15} />{searchRunning ? t('searching') : t('searchButton')}
                 </button>
                 {searchRunning && (
-                  <button className="btn" type="button" onClick={handleCancelSearch} style={{backgroundColor: '#ef4444'}}>
-                    ✖ {t('cancel')}
-                  </button>
-                )}
-                {searchRunning && (
-                  <span style={{fontSize: '13px', color: '#64748b'}}>
-                    {searchProgress.percent}% — {searchProgress.message}
-                  </span>
+                  <>
+                    <button className="btn" type="button" onClick={handleCancelSearch}>
+                      <XIcon size={15} />{t('cancel')}
+                    </button>
+                    <span className="muted">{searchProgress.percent}% {searchProgress.message}</span>
+                  </>
                 )}
               </div>
 
               {searchResult && (
-                <div style={{marginTop: '14px'}}>
-                  <p style={{fontSize: '13px', color: '#334155', margin: '0 0 6px 0'}}>
-                    {t('searchSummary')
-                      .replace('{hits}', searchResult.hits ? searchResult.hits.length : 0)
-                      .replace('{searched}', searchResult.snapshots_searched || 0)
-                      .replace('{assembled}', searchResult.snapshots_assembled || 0)}
-                    {searchResult.truncated ? ` ⚠️ ${t('searchTruncated').replace('{max}', 5000)}` : ''}
-                    {searchResult.cancelled ? ` ⚠️ ${t('searchCancelled')}` : ''}
+                <div style={{ marginTop: 'var(--s4)' }}>
+                  <p className="form-hint">
+                    {tf('searchSummary', {
+                      hits: searchResult.hits ? searchResult.hits.length : 0,
+                      searched: searchResult.snapshots_searched || 0,
+                      assembled: searchResult.snapshots_assembled || 0,
+                    })}
                   </p>
+                  {searchResult.truncated && (
+                    <div className="note note-warn">{tf('searchTruncated', { max: 5000 })}</div>
+                  )}
+                  {searchResult.cancelled && (
+                    <div className="note note-warn">{t('searchCancelled')}</div>
+                  )}
                   {searchResult.snapshots_in_range === 0 && (
-                    <p style={{fontSize: '12px', color: '#b45309', margin: '0 0 8px 0'}}>
-                      💡 {t('searchNoSnapshotsInRange')}
-                    </p>
+                    <div className="note note-warn">{t('searchNoSnapshotsInRange')}</div>
                   )}
                   {(searchResult.snapshots_skipped > 0 && !searchAssembleMissing) && (
-                    <p style={{fontSize: '12px', color: '#b45309', margin: '0 0 8px 0'}}>
-                      ⚠️ {t('searchSkippedWarning').replace('{n}', searchResult.snapshots_skipped)}
-                    </p>
+                    <div className="note note-warn">
+                      {tf('searchSkippedWarning', { n: searchResult.snapshots_skipped })}
+                    </div>
                   )}
 
-                  <div style={{
-                    border: '1px solid #cbd5e1',
-                    borderRadius: '8px',
-                    maxHeight: '320px',
-                    overflowY: 'auto',
-                    backgroundColor: '#fff'
-                  }}>
+                  <div className="tree" style={{ maxHeight: '320px' }}>
                     {(!searchResult.hits || searchResult.hits.length === 0) ? (
-                      <p style={{padding: '12px', color: '#718096'}}>{t('searchNoResults')}</p>
+                      <p className="form-hint" style={{ padding: 'var(--s3)' }}>{t('searchNoResults')}</p>
                     ) : (
                       searchResult.hits.map((hit, idx) => (
                         <div
                           key={`${hit.backup_id}-${hit.snapshot_time}-${hit.path}-${idx}`}
                           title={hit.origin_path || hit.path}
-                          style={{
-                            display: 'flex', alignItems: 'center', gap: '10px',
-                            padding: '6px 10px', borderBottom: '1px solid #f1f5f9', fontSize: '13px'
-                          }}
+                          className="tree-row"
                         >
-                          <span style={{fontSize: '15px'}}>{hit.is_dir ? '📁' : '📄'}</span>
-                          <div style={{flex: 1, minWidth: 0}}>
-                            <div style={{fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
+                          <span className={`tree-icon${hit.is_dir ? ' is-dir' : ''}`}>
+                            {hit.is_dir ? <FolderIcon size={15} /> : <FileIcon size={15} />}
+                          </span>
+                          <div className="tree-name">
+                            <div className="cell-primary" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {hit.path.split('/').pop() || hit.path}
                             </div>
-                            <div style={{color: '#64748b', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>
+                            <div className="cell-sub mono" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                               {hit.origin_path || hit.path}
                             </div>
-                            <div style={{color: '#94a3b8', fontSize: '11px'}}>
-                              {hit.backup_id} · {new Date(hit.snapshot_time * 1000).toLocaleString()}
+                            <div className="cell-sub">
+                              {hit.backup_id} · {new Date(hit.snapshot_time * 1000).toLocaleString(t('locale'))}
                               {hit.is_dir ? '' : ` · ${formatBytes(hit.size)}`}
                             </div>
                           </div>
-                          <button
-                            className="btn"
-                            type="button"
-                            onClick={() => handleRestoreHit(hit)}
-                            style={{padding: '4px 10px', fontSize: '12px'}}
-                          >
+                          <button className="btn btn-quiet" type="button" onClick={() => handleRestoreHit(hit)}>
                             {t('searchRestoreThis')}
                           </button>
                         </div>
@@ -2336,92 +2177,84 @@ function App() {
           )}
 
           {showSnapshots && (
-            <div style={{marginTop: '20px'}}>
+            <div className="section">
               <h3>{t('availableSnapshots')}</h3>
-              <div className="grid">
-                {snapshots.length === 0 ? (
-                  <p style={{color: '#718096'}}>{t('noSnapshotFound')}</p>
-                ) : (
-                  snapshots.map((snap, idx) => {
-                    const isActive = selectedSnapshot && selectedSnapshot.id === snap.id && selectedSnapshot.backup_id === snap.backup_id
-                    return (
-                      <div
-                        key={idx}
-                        className="card"
-                        style={{
-                          cursor: 'pointer',
-                          border: isActive ? '2px solid #2563eb' : undefined,
-                          backgroundColor: isActive ? '#eff6ff' : undefined
-                        }}
-                        onClick={() => handleSelectSnapshot(snap)}
-                      >
-                        <h3>📸 {snap.time}</h3>
-                        <p style={{color: '#718096', fontSize: '14px', marginTop: '5px'}}>
-                          {snap.backup_id}<br/>
-                          {t('typeLabel')}: {snap.backup_type || 'N/A'}
-                        </p>
-                        <button className="btn" style={{marginTop: '10px', width: '100%'}}>
-                          {isActive ? `✓ ${t('snapshotSelected')}` : t('selectSnapshot')}
-                        </button>
-                      </div>
-                    )
-                  })
-                )}
-              </div>
+              {snapshots.length === 0 ? (
+                <p className="muted">{t('noSnapshotFound')}</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>{t('metaBackupTime')}</th>
+                        <th>{t('backupID')}</th>
+                        <th>{t('typeLabel')}</th>
+                        <th style={{ textAlign: 'right' }}>{t('actions')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {snapshots.map((snap, idx) => {
+                        const isActive = selectedSnapshot && selectedSnapshot.id === snap.id && selectedSnapshot.backup_id === snap.backup_id
+                        return (
+                          <tr key={idx}>
+                            <td className="cell-primary">{snap.time}</td>
+                            <td className="mono">{snap.backup_id}</td>
+                            <td>{snap.backup_type || '-'}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button
+                                  className={isActive ? 'btn btn-primary btn-sm' : 'btn btn-quiet'}
+                                  onClick={() => handleSelectSnapshot(snap)}
+                                >
+                                  {isActive && <CheckCircleIcon size={14} weight="fill" />}
+                                  {isActive ? t('snapshotSelected') : t('selectSnapshot')}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Backup origin banner — driven by the .nimbus_backup_meta.json sidecar */}
+          {/* Backup origin banner - driven by the .nimbus_backup_meta.json sidecar */}
           {selectedSnapshot && snapshotMeta && (
-            <div style={{
-              marginTop: '20px',
-              padding: '10px 14px',
-              border: '1px solid #c7d2fe',
-              backgroundColor: '#eef2ff',
-              borderRadius: '8px',
-              fontSize: '13px',
-              color: '#1e293b',
-              display: 'grid',
-              gridTemplateColumns: 'auto 1fr',
-              columnGap: '12px',
-              rowGap: '4px'
-            }}>
-              <strong>{t('metaOriginalPath') || 'Source d\'origine'}</strong>
-              <span style={{fontFamily: 'monospace'}}>{snapshotMeta.original_path || '—'}</span>
-              <strong>{t('metaHostname') || 'Machine'}</strong>
-              <span>{snapshotMeta.hostname || '—'}{snapshotMeta.os ? ` (${snapshotMeta.os})` : ''}{snapshotMeta.vss_used ? ' · VSS' : ''}</span>
-              <strong>{t('metaBackupTime') || 'Sauvegardé le'}</strong>
-              <span>{snapshotMeta.backup_time || '—'}{snapshotMeta.client_version ? ` · client ${snapshotMeta.client_version}` : ''}</span>
+            <div className="note note-accent">
+              <dl className="kv">
+                <dt>{t('metaOriginalPath')}</dt>
+                <dd className="mono">{snapshotMeta.original_path || '-'}</dd>
+                <dt>{t('metaHostname')}</dt>
+                <dd>{snapshotMeta.hostname || '-'}{snapshotMeta.os ? ` (${snapshotMeta.os})` : ''}{snapshotMeta.vss_used ? ' · VSS' : ''}</dd>
+                <dt>{t('metaBackupTime')}</dt>
+                <dd>{snapshotMeta.backup_time || '-'}{snapshotMeta.client_version ? ` · ${snapshotMeta.client_version}` : ''}</dd>
+              </dl>
             </div>
           )}
 
           {/* Snapshot navigation tree */}
           {selectedSnapshot && (
-            <div style={{marginTop: '24px'}}>
-              <div style={{display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap'}}>
-                <h3 style={{margin: 0}}>📂 {t('snapshotContents')} — {selectedSnapshot.time}</h3>
+            <div className="section">
+              <h3>{t('snapshotContents')}</h3>
+              <div className="btn-row" style={{ marginTop: 0, marginBottom: 'var(--s2)' }}>
+                <span className="muted">{selectedSnapshot.time}</span>
                 <button
-                  className="btn"
+                  className="btn btn-quiet"
                   type="button"
                   onClick={handleReloadSnapshot}
-                  title={t('reloadTreeHint') || 'Bypass local cache and re-download the snapshot tree'}
-                  style={{padding: '4px 10px', fontSize: '13px'}}
+                  title={t('reloadTreeHint')}
                 >
-                  🔄 {t('reloadTree') || 'Recharger'}
+                  <ArrowClockwiseIcon size={14} />{t('reloadTree')}
                 </button>
               </div>
-              <p style={{fontSize: '13px', color: '#64748b', marginBottom: '8px', marginTop: '6px'}}>
-                {t('treeHint')}
-              </p>
-              <div style={{
-                border: '1px solid #cbd5e1',
-                borderRadius: '8px',
-                maxHeight: '360px',
-                overflowY: 'auto',
-                backgroundColor: '#fff'
-              }}>
+              <p className="form-hint" style={{ marginBottom: 'var(--s2)' }}>{t('treeHint')}</p>
+
+              <div className="tree">
                 {snapshotEntries.length === 0 ? (
-                  <p style={{padding: '12px', color: '#718096'}}>{t('loadingOrEmpty')}</p>
+                  <p className="form-hint" style={{ padding: 'var(--s3)' }}>{t('loadingOrEmpty')}</p>
                 ) : (
                   (() => {
                     const tree = buildTree(snapshotEntries)
@@ -2430,12 +2263,11 @@ function App() {
                   })()
                 )}
               </div>
-              <p style={{marginTop: '6px', fontSize: '12px', color: '#64748b'}}>
+
+              <p className="form-hint">
                 {selectedPaths.size === 0
-                  ? t('selectionEmptyAllSize').replace('{size}', formatBytes(selectionBytes))
-                  : t('selectionCountSize')
-                      .replace('{n}', selectedPaths.size)
-                      .replace('{size}', formatBytes(selectionBytes))}
+                  ? tf('selectionEmptyAllSize', { size: formatBytes(selectionBytes) })
+                  : tf('selectionCountSize', { n: selectedPaths.size, size: formatBytes(selectionBytes) })}
               </p>
             </div>
           )}
@@ -2447,72 +2279,46 @@ function App() {
             const crossHost = isInPlace && crossHostMismatch()
             const blockerTooltip = blocker ? (t(blocker) || '') : ''
             return (
-              <div style={{marginTop: '20px'}}>
-                {/* Mode picker */}
-                <div style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '20px',
-                  marginBottom: '14px',
-                  padding: '10px 14px',
-                  border: '1px solid #cbd5e1',
-                  borderRadius: '8px',
-                  backgroundColor: '#f8fafc'
-                }}>
-                  <label
-                    title={blockerTooltip}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: '6px',
-                      opacity: blocker ? 0.5 : 1,
-                      cursor: blocker ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <input
-                      type="radio"
-                      name="restoreMode"
-                      value="original"
-                      checked={restoreMode === 'original'}
-                      disabled={!!blocker}
-                      onChange={() => setRestoreMode('original')}
-                    />
-                    <strong>{t('restoreModeInPlace') || 'Restaurer in-place'}</strong>
-                    {blocker && <span style={{fontSize: '11px', color: '#dc2626'}}> ({blockerTooltip})</span>}
-                  </label>
-                  <label style={{display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer'}}>
-                    <input
-                      type="radio"
-                      name="restoreMode"
-                      value="alternate"
-                      checked={restoreMode !== 'original'}
-                      onChange={() => setRestoreMode('alternate_abs')}
-                    />
-                    <strong>{t('restoreModeAlternate') || 'Restaurer vers un autre emplacement'}</strong>
-                  </label>
-                </div>
+              <div className="section">
+                <label className="check" title={blockerTooltip} style={{ opacity: blocker ? 0.5 : 1 }}>
+                  <input
+                    type="radio"
+                    name="restoreMode"
+                    value="original"
+                    checked={restoreMode === 'original'}
+                    disabled={!!blocker}
+                    onChange={() => setRestoreMode('original')}
+                  />
+                  <span className="check-label">
+                    {t('restoreModeInPlace')}
+                    {blocker && <small>{blockerTooltip}</small>}
+                  </span>
+                </label>
+                <label className="check">
+                  <input
+                    type="radio"
+                    name="restoreMode"
+                    value="alternate"
+                    checked={restoreMode !== 'original'}
+                    onChange={() => setRestoreMode('alternate_abs')}
+                  />
+                  <span className="check-label">{t('restoreModeAlternate')}</span>
+                </label>
 
                 {/* In-place: warning banner + cross-host override */}
                 {isInPlace && (
-                  <div style={{
-                    marginBottom: '14px',
-                    padding: '10px 14px',
-                    border: '1px solid #fca5a5',
-                    backgroundColor: '#fef2f2',
-                    borderRadius: '8px',
-                    fontSize: '13px'
-                  }}>
-                    <div style={{color: '#991b1b', marginBottom: '6px'}}>
-                      ⚠️ {t('inPlaceWarning').replace('{path}', snapshotMeta?.original_path || '?')}
-                    </div>
+                  <div className="note note-danger">
+                    {tf('inPlaceWarning', { path: snapshotMeta?.original_path || '?' })}
                     {crossHost && (
-                      <label style={{display: 'flex', alignItems: 'center', gap: '6px', color: '#7c2d12'}}>
+                      <label className="check" style={{ marginTop: 'var(--s2)', marginBottom: 0 }}>
                         <input
                           type="checkbox"
                           checked={restoreAllowCrossHost}
                           onChange={(e) => setRestoreAllowCrossHost(e.target.checked)}
                         />
-                        {t('crossHostOverride')
-                          .replace('{src}', snapshotMeta?.hostname || '?')
-                          .replace('{dst}', hostname || '?')}
+                        <span className="check-label">
+                          {tf('crossHostOverride', { src: snapshotMeta?.hostname || '?', dst: hostname || '?' })}
+                        </span>
                       </label>
                     )}
                   </div>
@@ -2522,96 +2328,82 @@ function App() {
                 {!isInPlace && (
                   <>
                     <div className="form-group">
-                      <label>{t('destinationPath')}</label>
-                      <div style={{display: 'flex', gap: '8px'}}>
+                      <label htmlFor="rs-dest">{t('destinationPath')}</label>
+                      <div style={{ display: 'flex', gap: 'var(--s2)' }}>
                         <input
+                          id="rs-dest"
                           type="text"
                           value={restoreDestPath}
                           onChange={(e) => setRestoreDestPath(e.target.value)}
                           placeholder="C:\Restore"
-                          style={{flex: 1}}
                         />
                         <button className="btn" onClick={handleBrowseRestoreDest} type="button">
-                          📁 {t('browse')}
+                          <FolderOpenIcon size={15} />{t('browse')}
                         </button>
                       </div>
                     </div>
-                    <label style={{display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '12px'}}>
+                    <label className="check">
                       <input
                         type="checkbox"
                         checked={restoreKeepTree}
                         onChange={(e) => setRestoreKeepTree(e.target.checked)}
                       />
-                      {t('keepTreeLabel') || 'Conserver l\'arborescence d\'origine'}
-                      <span style={{fontSize: '12px', color: '#64748b'}}>
-                        {restoreKeepTree
-                          ? (t('keepTreeOnHint') || '(dest/Users/alice/doc.txt)')
-                          : (t('keepTreeOffHint') || '(dest/doc.txt — recommandé pour un fichier seul)')}
+                      <span className="check-label">
+                        {t('keepTreeLabel')}
+                        <small>{restoreKeepTree ? t('keepTreeOnHint') : t('keepTreeOffHint')}</small>
                       </span>
                     </label>
                   </>
                 )}
 
-                <div style={{display: 'flex', flexWrap: 'wrap', gap: '12px', marginBottom: '12px'}}>
-                  <label style={{display: 'flex', alignItems: 'center', gap: '6px', opacity: isInPlace ? 0.5 : 1}}
-                         title={isInPlace ? (t('overwriteForcedInPlace') || '') : ''}>
-                    <input
-                      type="checkbox"
-                      checked={isInPlace ? true : restoreOptions.overwrite}
-                      disabled={isInPlace}
-                      onChange={(e) => setRestoreOptions(o => ({...o, overwrite: e.target.checked}))}
-                    />
-                    {t('optionOverwrite')}
-                  </label>
-                  <label style={{display: 'flex', alignItems: 'center', gap: '6px'}}>
-                    <input
-                      type="checkbox"
-                      checked={restoreOptions.timestamps}
-                      onChange={(e) => setRestoreOptions(o => ({...o, timestamps: e.target.checked}))}
-                    />
-                    {t('optionTimestamps')}
-                  </label>
-                  <label style={{display: 'flex', alignItems: 'center', gap: '6px', opacity: 0.5}} title={t('optionComingSoon')}>
-                    <input type="checkbox" disabled checked={false} />
-                    {t('optionACLs')} <span style={{fontSize: '11px'}}>({t('comingSoon')})</span>
-                  </label>
-                  <label style={{display: 'flex', alignItems: 'center', gap: '6px', opacity: 0.5}} title={t('optionComingSoon')}>
-                    <input type="checkbox" disabled checked={false} />
-                    {t('optionADS')} <span style={{fontSize: '11px'}}>({t('comingSoon')})</span>
-                  </label>
+                <label className="check" style={{ opacity: isInPlace ? 0.5 : 1 }}
+                       title={isInPlace ? t('overwriteForcedInPlace') : ''}>
+                  <input
+                    type="checkbox"
+                    checked={isInPlace ? true : restoreOptions.overwrite}
+                    disabled={isInPlace}
+                    onChange={(e) => setRestoreOptions(o => ({...o, overwrite: e.target.checked}))}
+                  />
+                  <span className="check-label">{t('optionOverwrite')}</span>
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={restoreOptions.timestamps}
+                    onChange={(e) => setRestoreOptions(o => ({...o, timestamps: e.target.checked}))}
+                  />
+                  <span className="check-label">{t('optionTimestamps')}</span>
+                </label>
+                <label className="check" style={{ opacity: 0.5 }} title={t('optionComingSoon')}>
+                  <input type="checkbox" disabled checked={false} />
+                  <span className="check-label">{t('optionACLs')} <small>{t('comingSoon')}</small></span>
+                </label>
+                <label className="check" style={{ opacity: 0.5 }} title={t('optionComingSoon')}>
+                  <input type="checkbox" disabled checked={false} />
+                  <span className="check-label">{t('optionADS')} <small>{t('comingSoon')}</small></span>
+                </label>
+
+                <div className="btn-row">
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleRestoreSnapshot}
+                    disabled={restoreLoading || (isInPlace && crossHost && !restoreAllowCrossHost)}
+                  >
+                    <DownloadSimpleIcon size={15} />{restoreLoading ? t('restoring') : t('restore')}
+                  </button>
                 </div>
 
-                <button
-                  className="btn btn-primary"
-                  onClick={handleRestoreSnapshot}
-                  disabled={restoreLoading || (isInPlace && crossHost && !restoreAllowCrossHost)}
-                >
-                  {restoreLoading ? `⏳ ${t('restoring')}` : `▶️ ${t('restore')}`}
-                </button>
-
                 {restoreLoading && (
-                  <div style={{marginTop: '12px'}}>
-                    <div style={{height: '8px', backgroundColor: '#e2e8f0', borderRadius: '4px', overflow: 'hidden'}}>
-                      <div style={{
-                        height: '100%',
-                        width: `${restoreProgress}%`,
-                        backgroundColor: '#2563eb',
-                        transition: 'width 0.3s ease'
-                      }}/>
+                  <>
+                    <div className="progress">
+                      <div className="progress-bar" style={{ width: `${restoreProgress}%` }} />
                     </div>
-                    <p style={{textAlign: 'center', fontSize: '13px', color: '#64748b', marginTop: '4px'}}>
-                      {restoreProgress}%
-                    </p>
-                  </div>
+                    <p className="form-hint">{restoreProgress}%</p>
+                  </>
                 )}
               </div>
             )
           })()}
-
-          <div className="info-box" style={{marginTop: '20px'}}>
-            💡 <strong>{t('restoreInfo')}</strong> {t('restoreInfoText')}<br/>
-            {t('restoreInfoText2')}
-          </div>
 
           {status.visible && activeTab === 'restore' && (
             <div className={`status ${status.type} visible`}>{status.message}</div>
@@ -2619,47 +2411,32 @@ function App() {
         </div>
 
         {/* About Tab */}
-        <div className={`tab-content ${activeTab === 'about' ? 'active' : ''}`}>
-          <h2 style={{textAlign: 'center'}}>{t('aboutTitle')}</h2>
+        <div className={`panel ${activeTab === 'about' ? 'active' : ''}`}>
+          <h2>{t('aboutTitle')}</h2>
 
-          <img
-            src="https://nimbus.rdem-systems.com/logo.webp"
-            alt="Nimbus Backup"
-            className="logo"
-            onError={(e) => e.target.style.display = 'none'}
-          />
-
-          <div style={{textAlign: 'center', marginTop: '30px'}}>
-            <h3>Nimbus Backup</h3>
-            <p style={{color: '#718096', margin: '10px 0'}}>{t('version')} {appVersion}</p>
-
-            {/* Upsell CTA */}
-            <div style={{margin: '20px 0'}}>
-              <a
-                href={`${t('chooseBackupUrl')}?utm_source=NimbusGui&utm_medium=tooling&utm_campaign=version-${appVersion}&utm_content=version-${appVersion}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  display: 'inline-block',
-                  padding: '12px 24px',
-                  backgroundColor: '#667eea',
-                  color: 'white',
-                  textDecoration: 'none',
-                  borderRadius: '8px',
-                  fontWeight: 'bold',
-                  transition: 'background-color 0.3s'
-                }}
-                onMouseEnter={(e) => e.target.style.backgroundColor = '#5568d3'}
-                onMouseLeave={(e) => e.target.style.backgroundColor = '#667eea'}
-              >
-                📦 {t('orderStorageCTA')}
-              </a>
+          <div className="about-head">
+            <img src={logoUrl} alt="" className="about-logo" />
+            <div>
+              <h3 style={{ marginBottom: 0 }}>Nimbus Backup</h3>
+              <p className="muted">{t('version')} {appVersion}</p>
+              <p style={{ marginTop: 'var(--s3)' }}>
+                <a
+                  className="btn btn-primary"
+                  href={`${t('chooseBackupUrl')}?utm_source=NimbusGui&utm_medium=tooling&utm_campaign=version-${appVersion}&utm_content=version-${appVersion}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <CloudArrowUpIcon size={15} />{t('orderStorageCTA')}
+                </a>
+              </p>
             </div>
+          </div>
 
-            <div className="grid" style={{marginTop: '30px', textAlign: 'left'}}>
-              <div className="card">
-                <h3>✅ {t('features')}</h3>
-                <ul style={{lineHeight: 2, marginLeft: '20px'}}>
+          <div className="section">
+            <div className="grid">
+              <div>
+                <h4>{t('features')}</h4>
+                <ul className="plain-list">
                   <li>{t('featuresList.directories')}</li>
                   <li>{t('featuresList.machine')}</li>
                   <li>{t('featuresList.restore')}</li>
@@ -2669,9 +2446,9 @@ function App() {
                 </ul>
               </div>
 
-              <div className="card">
-                <h3>🚀 {t('technology')}</h3>
-                <ul style={{lineHeight: 2, marginLeft: '20px'}}>
+              <div>
+                <h4>{t('technology')}</h4>
+                <ul className="plain-list">
                   <li>{t('techList.wails')}</li>
                   <li>{t('techList.performance')}</li>
                   <li>{t('techList.interface')}</li>
@@ -2680,20 +2457,20 @@ function App() {
                 </ul>
               </div>
             </div>
+          </div>
 
-            <p style={{marginTop: '30px'}}>
-              <strong>{t('copyright')}</strong><br/>
-              <a href="https://nimbus.rdem-systems.com" style={{color: '#667eea'}}>nimbus.rdem-systems.com</a>
-            </p>
-
-            <p style={{marginTop: '20px', color: '#718096', fontSize: '12px'}}>
+          <div className="section">
+            <p><strong>{t('copyright')}</strong></p>
+            <p><a href="https://nimbus.rdem-systems.com">nimbus.rdem-systems.com</a></p>
+            <p className="faint" style={{ marginTop: 'var(--s3)', fontSize: 'var(--t-xs)' }}>
               {t('basedOn')}<br/>
               {t('techStack')}
             </p>
           </div>
         </div>
+        </main>
       </div>
-    </>
+    </div>
   )
 }
 
