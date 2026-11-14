@@ -26,10 +26,15 @@ formerly `tizbac/proxmoxbackupclient_go`), based on the tag `v2.0.0` (`b0bbc0fb`
   toggle, a German locale and a UI refresh) is kept on the branch `fork-0.3-activity`. Salvanza 2.0
   covers most of it (progress card for parallel runs, View Full Logs, per-user theme, 18 languages);
   do not port it back without a request.
-- **The earlier local install does not carry over.** That 0.3 fork kept its data in
-  `C:\ProgramData\NimbusBackup`. Unbranded Salvanza adopts only the `ProxmoxBackupClient` folders
-  (`legacyFolder` in `gui/identity.go`), so PBS servers and jobs have to be set up again. Old
-  snapshots on PBS are not needed.
+- **The earlier Nimbus install's settings are taken over.** That 0.3 fork kept its data in
+  `C:\ProgramData\NimbusBackup`. On Windows the service (and the app run as administrator before
+  Run as Service) adopts an earlier install's folder once, when `C:\ProgramData\Salvanza` has no
+  `config.json` yet: `C:\ProgramData\ProxmoxBackupClient` or another brand's folder, `NimbusBackup`
+  included (`adoptWindowsState` in `gui/config.go`; `otherBrandFolders` and `adoptFolder` in
+  `gui/identity.go`). The folder is moved, not copied (copied only when it cannot be renamed), and a
+  copy of its settings files stays in `C:\ProgramData\Salvanza\pre-salvanza-<date>`. Without the
+  service the app uses `~/.salvanza` and adopts only `~/.nimbusbackup`, `~/.etitechbackup` or
+  `~/.proxmox-backup-guardian`. Old snapshots on PBS are not needed.
 
 ## Fork-only changes
 
