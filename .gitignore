@@ -42,6 +42,10 @@ vendor/
 
 # Frontend dependencies
 gui/frontend/node_modules/
+# Written by `wails build` / `wails dev`: the JS bindings for the Go API and the
+# checksum Wails uses to skip `npm install` when package.json is unchanged
+gui/frontend/wailsjs/
+gui/frontend/package.json.md5
 
 # Generated Windows version resource (created in CI by goversioninfo)
 *.syso
