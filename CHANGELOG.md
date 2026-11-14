@@ -5,6 +5,12 @@ All notable changes to Salvanza for Proxmox Backup Server (formerly Proxmox Back
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Reading a backup back (restore, browsing a snapshot, `attach-nbd`) decompresses chunks with one shared zstd decoder** instead of building a new decoder for every chunk, compressed and encrypted chunks alike: fewer allocations on the path that fetches and decodes one chunk per call. The decoder is still created without an input stream, which is what keeps decoders from waiting forever for a read that never comes (the restore stall fixed earlier in `GetChunkData`).
+
 ## [2.0.0] - not yet released
 
 This release merges the reworked GUI (RDEM Systems' Nimbus Backup GUI, reworked and

@@ -1779,14 +1779,10 @@ func (pbs *PBSClient) GetChunkData(ctx context.Context, digest string) ([]byte, 
 		// DIDXReaderAt never had a chance against this: by the time it hangs,
 		// the network read is long done, so no context timeout on the HTTP
 		// request can touch it.
-		dec, err := zstd.NewReader(nil)
-
-		if err != nil {
-			return nil, err
-		}
-		defer dec.Close()
-		ret2 := make([]byte, 0)
-		ret2, err = dec.DecodeAll(ret[12:], ret2)
+		//
+		// zstdDecodeAll keeps that nil-input rule but shares one decoder
+		// across all calls instead of constructing one per chunk.
+		ret2, err := zstdDecodeAll(ret[12:])
 		if err != nil {
 			return nil, err
 		}

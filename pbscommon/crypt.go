@@ -16,6 +16,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -298,13 +299,38 @@ func DecodeEncryptedBlob(raw []byte, crypt *CryptConfig, digest []byte) ([]byte,
 // zstdDecodeAll decodes a zstd frame. A nil reader is used on purpose: giving
 // zstd.NewReader a real io.Reader makes it spawn stream decoding goroutines
 // that only exit when the decoder is closed.
+//
+// The decoder is shared process-wide instead of being built per call. A
+// restore decodes one chunk per call, and a fresh decoder per chunk allocates
+// its block-decoder pool and buffers every time (tizbac 5142604 introduced a
+// shared decoder for the same reason; the current GetChunkData had gone back
+// to one per call). Both GetChunkData and DecodeEncryptedBlob come through here.
 func zstdDecodeAll(data []byte) ([]byte, error) {
-	dec, err := zstd.NewReader(nil)
+	dec, err := sharedZstdDecoder()
 	if err != nil {
 		return nil, err
 	}
-	defer dec.Close()
 	return dec.DecodeAll(data, nil)
+}
+
+var (
+	zstdDecOnce sync.Once
+	zstdDec     *zstd.Decoder
+	zstdDecErr  error
+)
+
+// sharedZstdDecoder returns the process-wide decoder, created on first use so a
+// process that only uploads never builds one. It is never closed, on purpose:
+// with a nil input, klauspost/compress v1.17.9's NewReader only fills its
+// block-decoder pool and starts no goroutine, so nothing leaks, and DecodeAll is
+// safe for concurrent use. Concurrency 0 = GOMAXPROCS (the library default is
+// min(4, GOMAXPROCS)): the restore readers decode chunks from worker pools, and
+// the decoder's concurrency caps how many DecodeAll calls run at once.
+func sharedZstdDecoder() (*zstd.Decoder, error) {
+	zstdDecOnce.Do(func() {
+		zstdDec, zstdDecErr = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0))
+	})
+	return zstdDec, zstdDecErr
 }
 
 func verifyBlobCRC(raw []byte, headerSize int) error {
