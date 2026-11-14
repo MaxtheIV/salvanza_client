@@ -45,6 +45,8 @@ Keep this list current. Each entry is a candidate pull request to Salvanza.
 
 - `1b53eb88` pbscommon: share one zstd decoder instead of building one per chunk
   (`zstdDecodeAll` / `sharedZstdDecoder` in `pbscommon/crypt.go`).
+- `c5ea6c65` gitignore: ignore `gui/frontend/wailsjs/` and `gui/frontend/package.json.md5`, which
+  every `wails build` writes.
 
 When preparing a pull request to Salvanza, branch from `upstream/master` and cherry-pick the change;
 leave this `CLAUDE.md` out, it exists only in the fork.
