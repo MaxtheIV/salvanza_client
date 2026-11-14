@@ -9,14 +9,17 @@ platform notes. This file only adds what is specific to this fork and to the loc
 
 ## What this fork is
 
-A private fork of **Salvanza for Proxmox Backup Server** (`Salvanza/salvanza_client`, GPLv3,
-formerly `tizbac/proxmoxbackupclient_go`), based on the tag `v2.0.0` (`b0bbc0fb`, 2026-11-08).
+A personal, **public** fork of **Salvanza for Proxmox Backup Server** (`Salvanza/salvanza_client`,
+GPLv3, formerly `tizbac/proxmoxbackupclient_go`), based on the tag `v2.0.0` (`b0bbc0fb`,
+2026-11-08). On GitHub it sits in Salvanza's fork network (Salvanza → rdemsystems → this repo), so
+pull requests to Salvanza can be opened from it directly. The repository was called
+`NimbusBackupClient` until 2026-11-14; GitHub redirects the old URL.
 
 | Remote | Repository | Role |
 |---|---|---|
-| `origin` | `MaxtheIV/NimbusBackupClient` | this fork |
-| `salvanza` | `Salvanza/salvanza_client` | upstream; sync from here |
-| `upstream` | `rdemsystems/NimbusBackupClient` | the Nimbus Backup 0.4.x line; RDEM moved development to Salvanza, so this only gets critical fixes now. Reference only |
+| `origin` | `MaxtheIV/salvanza_client` | this fork |
+| `upstream` | `Salvanza/salvanza_client` | sync from here |
+| `rdem` | `rdemsystems/NimbusBackupClient` | the Nimbus Backup 0.4.x line; RDEM moved development to Salvanza, so this only gets critical fixes now. Reference only |
 
 - **Build the unbranded Salvanza edition.** The brand comes from the program's file name
   (`gui/brand.go`), so keep the outputs named `salvanza-gui.exe` / `salvanza-svc.exe`; do not rename
@@ -43,14 +46,14 @@ Keep this list current. Each entry is a candidate pull request to Salvanza.
 - `1b53eb88` pbscommon: share one zstd decoder instead of building one per chunk
   (`zstdDecodeAll` / `sharedZstdDecoder` in `pbscommon/crypt.go`).
 
-When preparing a pull request to Salvanza, branch from `salvanza/master` and cherry-pick the change;
+When preparing a pull request to Salvanza, branch from `upstream/master` and cherry-pick the change;
 leave this `CLAUDE.md` out, it exists only in the fork.
 
 ## Syncing with Salvanza
 
 ```sh
-git fetch salvanza --tags
-git merge salvanza/master        # or a release tag
+git fetch upstream --tags
+git merge upstream/master        # or a release tag
 ```
 
 Read `CHANGELOG.md` of the new version first. Salvanza moves fast and renames freely (2.0 renamed the
